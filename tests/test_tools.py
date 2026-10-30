@@ -249,6 +249,22 @@ class ToolTests(unittest.TestCase):
         cmd_content = (ROOT / 'scripts/key_remap/enable_keys.cmd').read_text(encoding='utf-8')
         self.assertIn('id -u | findstr /x 0', cmd_content, "enable_keys.cmd must verify root UID is 0 via findstr /x 0")
 
+    def test_bilibili_script_bans_wildcard_sed_and_requires_modes(self):
+        bili_sh = (ROOT / 'scripts/fix_bilibili_ssl.sh').read_text(encoding='utf-8')
+        self.assertNotIn('sed -i', bili_sh, "Wildcard sed -i is banned from fix_bilibili_ssl.sh")
+        self.assertNotIn('s/libcrypto', bili_sh, "No sed replacement should occur on library files")
+        self.assertNotIn('s/libssl', bili_sh, "No sed replacement should occur on library files")
+        self.assertIn('STATUS:BACKED_UP', bili_sh)
+        self.assertIn('STATUS:APPLYING', bili_sh)
+        self.assertIn('STATUS:COMPLETED', bili_sh)
+        self.assertIn('STATUS:ROLLING_BACK', bili_sh)
+        self.assertIn('STATUS:ROLLED_BACK', bili_sh)
+        self.assertIn('STATUS:RESTORED', bili_sh)
+        self.assertIn('rollback_from_backup', bili_sh)
+        self.assertIn('apply', bili_sh)
+        self.assertIn('restore', bili_sh)
+        self.assertIn('status', bili_sh)
+
     def test_wal_recovery_logic_simulation(self):
         """Simulate WAL state parsing for both normal and interrupted transactions."""
         def parse_and_simulate_restore(snapshot_content: str, fail_on_pkg: str = None):
@@ -366,6 +382,7 @@ exit 0
         (mock_bin / 'free').write_text('#!/bin/sh\necho "             total        used        free"\necho "Mem:           1800        1200         600"\n', encoding='utf-8')
         (mock_bin / 'sync').write_text('#!/bin/sh\nif [ "$FAIL_SYNC" = "1" ]; then exit 1; fi\nexit 0\n', encoding='utf-8')
         (mock_bin / 'setprop').write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
+        (mock_bin / 'restorecon').write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
 
         dumpsys_file = tmp_path / 'dumpsys_output.txt'
         dumpsys_file.write_text(mock_dumpsys_text, encoding='utf-8')
@@ -379,6 +396,7 @@ exit 0
         env = os.environ.copy()
         env['PATH'] = str(mock_bin) + os.pathsep + env.get('PATH', '')
         env['MOCK_DISABLED_FILE'] = str(tmp_path / 'disabled_pkgs.txt')
+        env['SKIP_ROOT_CHECK'] = '1'
         return env
 
     def test_shell_debloat_and_restore_full_cycle(self):
@@ -521,6 +539,247 @@ exit 0
             self.assertIn("Snapshot pre-flight validation failed", res.stderr)
             self.assertIn("Device state has NOT been altered", res.stderr)
             self.assertTrue(bad_snap.exists(), "Snapshot must be retained untouched")
+
+    def _setup_mock_bilibili_libs(self, lib_dir):
+        lib_dir.mkdir(parents=True, exist_ok=True)
+        for name in ('libcrypto.so', 'libssl.so', 'libignet.so'):
+            (lib_dir / name).write_bytes(elf_fixture())
+
+    def test_shell_bilibili_full_lifecycle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            state_dir = tmp_path / 'state'
+            lib_dir = tmp_path / 'lib'
+            prep_dir = tmp_path / 'prepared'
+            self._setup_mock_bilibili_libs(lib_dir)
+
+            prepare(lib_dir, prep_dir)
+
+            env = self.create_mock_env(tmp_path)
+            env['STATE_DIR'] = state_dir.as_posix()
+            env['MOCK_LIB_DIR'] = lib_dir.as_posix()
+
+            script = (ROOT / 'scripts/fix_bilibili_ssl.sh').as_posix()
+
+            # 1. Apply patch
+            res_apply = subprocess.run([self.sh_exe, script, 'apply', prep_dir.as_posix()],
+                                       env=env, capture_output=True, text=True)
+            self.assertEqual(res_apply.returncode, 0, f"apply failed: {res_apply.stderr}")
+            self.assertTrue((lib_dir / 'libbili_o.so').exists())
+            self.assertTrue((lib_dir / 'libbsl.so').exists())
+
+            tx_file = state_dir / 'tx_state.txt'
+            self.assertTrue(tx_file.exists())
+            tx_text = tx_file.read_text(encoding='utf-8')
+            self.assertIn('STATUS:BACKED_UP', tx_text)
+            self.assertIn('STATUS:APPLYING', tx_text)
+            self.assertIn('STATUS:COMPLETED', tx_text)
+
+            # 2. Check status
+            res_status = subprocess.run([self.sh_exe, script, 'status'],
+                                        env=env, capture_output=True, text=True)
+            self.assertEqual(res_status.returncode, 0)
+            self.assertIn('Device Status  : Patched', res_status.stdout)
+
+            # 3. Apply again should be blocked because already patched
+            res_dup = subprocess.run([self.sh_exe, script, 'apply', prep_dir.as_posix()],
+                                     env=env, capture_output=True, text=True)
+            self.assertNotEqual(res_dup.returncode, 0)
+            self.assertIn('already patched', res_dup.stderr)
+
+            # 4. Restore from backup
+            res_restore = subprocess.run([self.sh_exe, script, 'restore'],
+                                         env=env, capture_output=True, text=True)
+            self.assertEqual(res_restore.returncode, 0, f"restore failed: {res_restore.stderr}")
+            self.assertFalse((lib_dir / 'libbili_o.so').exists())
+            self.assertFalse((lib_dir / 'libbsl.so').exists())
+
+            tx_text_after = tx_file.read_text(encoding='utf-8')
+            self.assertIn('STATUS:RESTORED', tx_text_after)
+
+            # 5. Check status after restore
+            res_status2 = subprocess.run([self.sh_exe, script, 'status'],
+                                         env=env, capture_output=True, text=True)
+            self.assertEqual(res_status2.returncode, 0)
+            self.assertIn('Device Status  : Unpatched', res_status2.stdout)
+
+    def test_shell_bilibili_precheck_mismatch_blocks_without_touching(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            state_dir = tmp_path / 'state'
+            lib_dir = tmp_path / 'lib'
+            prep_dir = tmp_path / 'prepared'
+            self._setup_mock_bilibili_libs(lib_dir)
+
+            prepare(lib_dir, prep_dir)
+
+            # Tamper with target library before patch
+            (lib_dir / 'libcrypto.so').write_bytes(b'tampered_library_content')
+
+            env = self.create_mock_env(tmp_path)
+            env['STATE_DIR'] = state_dir.as_posix()
+            env['MOCK_LIB_DIR'] = lib_dir.as_posix()
+
+            script = (ROOT / 'scripts/fix_bilibili_ssl.sh').as_posix()
+            res = subprocess.run([self.sh_exe, script, 'apply', prep_dir.as_posix()],
+                                 env=env, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 1)
+            self.assertIn('Target libraries in', res.stderr)
+            self.assertIn('do not match expected original.sha256', res.stderr)
+            self.assertFalse((state_dir / 'tx_state.txt').exists())
+            self.assertEqual(len(list(state_dir.glob('backup-*'))), 0)
+            self.assertEqual((lib_dir / 'libcrypto.so').read_bytes(), b'tampered_library_content')
+
+    def test_shell_bilibili_fault_injection_midway_write_triggers_rollback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            state_dir = tmp_path / 'state'
+            lib_dir = tmp_path / 'lib'
+            prep_dir = tmp_path / 'prepared'
+            self._setup_mock_bilibili_libs(lib_dir)
+
+            prepare(lib_dir, prep_dir)
+
+            env = self.create_mock_env(tmp_path)
+            env['STATE_DIR'] = state_dir.as_posix()
+            env['MOCK_LIB_DIR'] = lib_dir.as_posix()
+            env['FAIL_ON_SO'] = 'libbsl.so'
+
+            script = (ROOT / 'scripts/fix_bilibili_ssl.sh').as_posix()
+            res = subprocess.run([self.sh_exe, script, 'apply', prep_dir.as_posix()],
+                                 env=env, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 1)
+            self.assertIn('Initiating rollback', res.stderr)
+            self.assertIn('Rollback successful', res.stderr)
+
+            # Verify complete rollback
+            self.assertFalse((lib_dir / 'libbili_o.so').exists())
+            self.assertFalse((lib_dir / 'libbsl.so').exists())
+            for name in ('libcrypto.so', 'libssl.so', 'libignet.so'):
+                self.assertEqual((lib_dir / name).read_bytes(), elf_fixture())
+
+            tx_file = state_dir / 'tx_state.txt'
+            self.assertTrue(tx_file.exists())
+            tx_text = tx_file.read_text(encoding='utf-8')
+            self.assertIn('STATUS:ROLLING_BACK', tx_text)
+            self.assertIn('STATUS:ROLLED_BACK', tx_text)
+
+    def test_shell_bilibili_fault_injection_postcheck_failure_triggers_rollback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            state_dir = tmp_path / 'state'
+            lib_dir = tmp_path / 'lib'
+            prep_dir = tmp_path / 'prepared'
+            self._setup_mock_bilibili_libs(lib_dir)
+
+            prepare(lib_dir, prep_dir)
+
+            env = self.create_mock_env(tmp_path)
+            env['STATE_DIR'] = state_dir.as_posix()
+            env['MOCK_LIB_DIR'] = lib_dir.as_posix()
+            env['FAIL_POST_CHECK'] = '1'
+
+            script = (ROOT / 'scripts/fix_bilibili_ssl.sh').as_posix()
+            res = subprocess.run([self.sh_exe, script, 'apply', prep_dir.as_posix()],
+                                 env=env, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 1)
+            self.assertIn('Post-patch SHA-256 verification failed! Initiating rollback', res.stderr)
+            self.assertIn('Rollback successful', res.stderr)
+
+            self.assertFalse((lib_dir / 'libbili_o.so').exists())
+            self.assertFalse((lib_dir / 'libbsl.so').exists())
+            for name in ('libcrypto.so', 'libssl.so', 'libignet.so'):
+                self.assertEqual((lib_dir / name).read_bytes(), elf_fixture())
+
+            tx_text = (state_dir / 'tx_state.txt').read_text(encoding='utf-8')
+            self.assertIn('STATUS:ROLLED_BACK', tx_text)
+
+    def test_shell_bilibili_interrupted_transaction_recovery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            state_dir = tmp_path / 'state'
+            state_dir.mkdir()
+            lib_dir = tmp_path / 'lib'
+            prep_dir = tmp_path / 'prepared'
+            self._setup_mock_bilibili_libs(lib_dir)
+
+            prepare(lib_dir, prep_dir)
+
+            # Set up mock interrupted transaction with valid backup
+            backup_dir = state_dir / 'backup-12345-999'
+            backup_orig = backup_dir / 'original'
+            backup_orig.mkdir(parents=True)
+            for name in ('libcrypto.so', 'libssl.so', 'libignet.so'):
+                (backup_orig / name).write_bytes(elf_fixture())
+            shutil.copy(prep_dir / 'original.sha256', backup_dir / 'original.sha256')
+            shutil.copy(prep_dir / 'patched.sha256', backup_dir / 'patched.sha256')
+            (backup_dir / 'lib.path').write_text(lib_dir.as_posix(), encoding='utf-8')
+
+            tx_file = state_dir / 'tx_state.txt'
+            tx_file.write_text(
+                f"TIMESTAMP:12345\nLIB:{lib_dir.as_posix()}\nBACKUP_DIR:{backup_dir.as_posix()}\nSTATUS:BACKED_UP\nSTATUS:APPLYING\n",
+                encoding='utf-8'
+            )
+
+            # Simulate partially modified lib directory
+            (lib_dir / 'libbili_o.so').write_bytes(b'partial_artifact')
+
+            env = self.create_mock_env(tmp_path)
+            env['STATE_DIR'] = state_dir.as_posix()
+            env['MOCK_LIB_DIR'] = lib_dir.as_posix()
+
+            script = (ROOT / 'scripts/fix_bilibili_ssl.sh').as_posix()
+
+            # 1. apply must detect interrupted state and reject
+            res_apply = subprocess.run([self.sh_exe, script, 'apply', prep_dir.as_posix()],
+                                       env=env, capture_output=True, text=True)
+            self.assertEqual(res_apply.returncode, 1)
+            self.assertIn('An interrupted transaction was detected', res_apply.stderr)
+
+            # 2. restore without arguments automatically recovers from recorded backup
+            res_restore = subprocess.run([self.sh_exe, script, 'restore'],
+                                         env=env, capture_output=True, text=True)
+            self.assertEqual(res_restore.returncode, 0, f"restore failed: {res_restore.stderr}")
+            self.assertFalse((lib_dir / 'libbili_o.so').exists())
+            self.assertFalse((lib_dir / 'libbsl.so').exists())
+            for name in ('libcrypto.so', 'libssl.so', 'libignet.so'):
+                self.assertEqual((lib_dir / name).read_bytes(), elf_fixture())
+
+            tx_text = tx_file.read_text(encoding='utf-8')
+            self.assertIn('STATUS:RESTORED', tx_text)
+
+    def test_shell_bilibili_corrupted_backup_preflight_blocks_restore(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            state_dir = tmp_path / 'state'
+            state_dir.mkdir()
+            lib_dir = tmp_path / 'lib'
+            prep_dir = tmp_path / 'prepared'
+            self._setup_mock_bilibili_libs(lib_dir)
+
+            prepare(lib_dir, prep_dir)
+
+            backup_dir = state_dir / 'backup-corrupted'
+            backup_orig = backup_dir / 'original'
+            backup_orig.mkdir(parents=True)
+            for name in ('libcrypto.so', 'libssl.so', 'libignet.so'):
+                (backup_orig / name).write_bytes(elf_fixture())
+            shutil.copy(prep_dir / 'original.sha256', backup_dir / 'original.sha256')
+            (backup_dir / 'lib.path').write_text(lib_dir.as_posix(), encoding='utf-8')
+
+            # Corrupt one backup library
+            (backup_orig / 'libcrypto.so').write_bytes(b'corrupted_backup_data')
+
+            env = self.create_mock_env(tmp_path)
+            env['STATE_DIR'] = state_dir.as_posix()
+            env['MOCK_LIB_DIR'] = lib_dir.as_posix()
+
+            script = (ROOT / 'scripts/fix_bilibili_ssl.sh').as_posix()
+            res = subprocess.run([self.sh_exe, script, 'restore', backup_dir.as_posix()],
+                                 env=env, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 1)
+            self.assertIn('Backup files corrupted! Hash verification failed', res.stderr)
+            self.assertIn('Device state has NOT been altered', res.stderr)
 
 
 if __name__ == '__main__':

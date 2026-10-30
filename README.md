@@ -203,32 +203,42 @@ I tv.danmaku.bil: Rejecting re-init on previously-failed class: java.lang.Unsati
 
 Android 9 的 `Zygote` 进程在系统初始化阶段，预先在全局命名空间中加载了老旧的 `/system/lib/libcrypto.so` 和 `/system/lib/libssl.so`。新版 B 站自身虽然携带了支持现代加密算法（包含 HPKE 接口）的私有 BoringSSL 动态库，但因文件名完全同名，Linux 动态链接器（linker）优先匹配到了系统全局的旧库，导致符号缺失崩溃。
 
-### 3. 热补丁方案（支持直接安全热修与本地精密 ELF 校验两种模式）
+### 3. 精密热补丁方案（宿主机 ELF 符号改写 + 设备端事务快照回滚）
 
-我们无需重编译 APK，直接对设备中的 ELF 二进制文件执行原位字符替换（保持字符串长度完全相等以避免破坏 ELF 节头偏移）：
+为了彻底杜绝在真机上盲目执行通配符修改损坏系统二进制文件的风险，本项目采用严格的**两阶段事务补丁流水线**：
+在宿主机精确解析 ELF32 `PT_DYNAMIC` 段与 `DT_STRTAB` 符号表，原位替换依赖库名（保持字符串长度完全相等以避免破坏 ELF 节头偏移），并生成 SHA-256 清单；设备端则由状态机脚本执行前置校验、原子快照、原子搬移写入与异常自动回滚：
 - `libcrypto.so` (12 字符) $\rightarrow$ `libbili_o.so` (12 字符)
 - `libssl.so` (9 字符) $\rightarrow$ `libbsl.so` (9 字符)
 
-#### 模式 A：真机一键执行（自带快照备份与一键还原）
-直接执行升级后的热补丁脚本，脚本会自动对原始动态库做快照备份并安全加固：
+#### 步骤 1：宿主机精确重构 ELF 与生成哈希清单
+在 PC 端（不依赖设备安装 Python），针对从 APK 提取或设备拉取的 32 位动态库执行精准重构：
+```sh
+# 1. 精密改写 PT_DYNAMIC 中的 DT_NEEDED 与 DT_SONAME，并生成 original.sha256 与 patched.sha256
+python scripts/prepare_bilibili_ssl.py <extracted_libs_dir> <output_patched_dir>
+```
+
+#### 步骤 2：推送并在设备端以事务状态机安全应用
+将补丁目录与部署脚本推送到设备，执行带有原子快照保护的热补丁：
 ```sh
 adb push scripts/fix_bilibili_ssl.sh /data/local/tmp/
-adb shell "sh /data/local/tmp/fix_bilibili_ssl.sh"
-```
-如需回滚还原，只需运行输出提示的还原命令：
-```sh
-adb shell "sh /data/local/tmp/fix_bilibili_ssl.sh restore <BACKUP_DIR>"
-```
-
-#### 模式 B：宿主机精密解析补丁（针对 ELF32 动态节严格校验）
-若要在电脑端针对 B 站提取库进行符号表精确重构，可使用配套工具：
-```sh
-# 1. 宿主机精密解析 PT_DYNAMIC 段、仅改写 DT_STRTAB 并生成 SHA256 校验清单
-python scripts/prepare_bilibili_ssl.py <extracted_libs_dir> <output_patched_dir>
-
-# 2. 推送至设备并通过清单安全应用
-adb push scripts/fix_bilibili_ssl.sh <output_patched_dir> /data/local/tmp/
+adb push <output_patched_dir> /data/local/tmp/
 adb shell "sh /data/local/tmp/fix_bilibili_ssl.sh apply /data/local/tmp/<output_patched_dir>"
+```
+
+#### 事务状态机与安全性保障
+1. **静态双重校验**：在变更任何文件前，脚本同时比对 `$INPUT/patched.sha256` 与 `$LIB/original.sha256`。若设备上动态库版本不匹配或文件已被损坏，立即拒绝执行并退出。
+2. **完整原位快照**：应用补丁前，将原始库和路径元数据备份至 `/data/local/c10h-bili-state/backup-<TIMESTAMP>` 并校验备份完整性，随后写入 `STATUS:BACKED_UP`。
+3. **原子搬移与自动回滚**：补丁文件先以临时文件名写入，再通过原子 `mv` 替换。若在写入过程中遭遇断电、磁盘满或后置哈希校验失败，`EXIT` 陷阱将立即触发 `rollback_from_backup`，从快照恢复全部原始库并清理补丁残留，记录 `STATUS:ROLLED_BACK`。
+4. **中断事务防御与一键还原**：若因掉电导致事务处于未完成态，再次运行 `apply` 会被硬性拦截并提示恢复；随时可通过以下命令一键恢复至官方纯净状态：
+```sh
+# 恢复至最近一次有效快照
+adb shell "sh /data/local/tmp/fix_bilibili_ssl.sh restore"
+
+# 或指定具体快照目录恢复
+adb shell "sh /data/local/tmp/fix_bilibili_ssl.sh restore /data/local/c10h-bili-state/<BACKUP_DIR>"
+
+# 查看当前补丁及事务状态
+adb shell "sh /data/local/tmp/fix_bilibili_ssl.sh status"
 ```
 修改后，B 站动态库精准绑定私有副本，新版客户端完美运行，视频播放与弹幕一切正常！
 
