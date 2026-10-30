@@ -16,19 +16,61 @@ ROOT="$STATE_DIR"
 TX_FILE="$STATE_DIR/tx_state.txt"
 LOCK_DIR="$STATE_DIR/lock"
 
-# Root check (can be bypassed in mock tests via SKIP_ROOT_CHECK=1)
-if [ "${SKIP_ROOT_CHECK:-0}" != "1" ] && [ "$(id -u)" != 0 ]; then
-  echo "ERROR: Root required." >&2
-  exit 1
-fi
+MODE="${1:-}"
 
 # Locate library directory
 if [ -n "${MOCK_LIB_DIR:-}" ]; then
   LIB="$MOCK_LIB_DIR"
+  APK=""
 else
   APK=$(pm path "$PACKAGE" 2>/dev/null | sed -n 's/^package://p' | head -n 1)
-  [ -n "$APK" ] || { echo "ERROR: Package $PACKAGE is not installed." >&2; exit 1; }
+  if [ -z "$APK" ] && [ "$MODE" != "status" ]; then
+    echo "ERROR: Package $PACKAGE is not installed." >&2
+    exit 1
+  fi
   LIB="${APK%/*}/lib/arm"
+fi
+
+# 1. Read-only status command (does NOT acquire exclusive lock)
+if [ "$MODE" = "status" ]; then
+  echo "=== Bilibili BoringSSL Patch Status ==="
+  echo "Target Package : $PACKAGE"
+  echo "Library Dir    : ${LIB:-Not found}"
+  echo "State Dir      : $STATE_DIR"
+  if [ -d "$LIB" ] && { [ -f "$LIB/libbili_o.so" ] || [ -f "$LIB/libbsl.so" ]; }; then
+    echo "Device Status  : Patched (libbili_o.so / libbsl.so present)"
+  elif [ -d "$LIB" ]; then
+    echo "Device Status  : Unpatched (original state)"
+  else
+    echo "Device Status  : Library directory not accessible"
+  fi
+
+  if [ -f "$TX_FILE" ]; then
+    LAST_STATUS=$(grep '^STATUS:' "$TX_FILE" 2>/dev/null | tail -n 1 | cut -d: -f2- || true)
+    LAST_BACKUP=$(grep '^BACKUP_DIR:' "$TX_FILE" 2>/dev/null | tail -n 1 | cut -d: -f2- || true)
+    echo "Last Tx Status : ${LAST_STATUS:-None}"
+    echo "Last Backup    : ${LAST_BACKUP:-None}"
+  else
+    echo "Last Tx Status : No transaction history"
+  fi
+
+  if [ -d "$LOCK_DIR" ]; then
+    LPID=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+    if [ -n "$LPID" ] && kill -0 "$LPID" 2>/dev/null; then
+      echo "Lock Status    : Held by active process (PID: $LPID)"
+    else
+      echo "Lock Status    : Stale lock present (PID: ${LPID:-unknown})"
+    fi
+  else
+    echo "Lock Status    : Unlocked"
+  fi
+  exit 0
+fi
+
+# Root check (can be bypassed in mock tests via SKIP_ROOT_CHECK=1)
+if [ "${SKIP_ROOT_CHECK:-0}" != "1" ] && [ "$(id -u)" != 0 ]; then
+  echo "ERROR: Root required." >&2
+  exit 1
 fi
 
 [ -d "$LIB" ] || { echo "ERROR: 32-bit library directory not found: $LIB" >&2; exit 1; }
@@ -36,10 +78,56 @@ fi
 umask 077
 mkdir -p "$STATE_DIR"
 
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-  echo "ERROR: Another patch operation is running (lock exists at $LOCK_DIR)." >&2
-  exit 1
-fi
+# Concurrency lock management with stale lock reclamation
+acquire_lock() {
+  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    # Lock directory exists. Check whether owner is alive or dead/rebooted
+    local LOCK_PID=""
+    local LOCK_BOOT=""
+    if [ -f "$LOCK_DIR/pid" ]; then
+      LOCK_PID=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+    fi
+    if [ -f "$LOCK_DIR/boot_id" ]; then
+      LOCK_BOOT=$(cat "$LOCK_DIR/boot_id" 2>/dev/null || true)
+    fi
+    local CURR_BOOT=""
+    if [ -f /proc/sys/kernel/random/boot_id ]; then
+      CURR_BOOT=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
+    fi
+
+    local IS_STALE=0
+    if [ -n "$LOCK_BOOT" ] && [ -n "$CURR_BOOT" ] && [ "$LOCK_BOOT" != "$CURR_BOOT" ]; then
+      IS_STALE=1
+    elif [ -n "$LOCK_PID" ]; then
+      if ! kill -0 "$LOCK_PID" 2>/dev/null; then
+        IS_STALE=1
+      fi
+    else
+      IS_STALE=1
+    fi
+
+    if [ "$IS_STALE" = "1" ]; then
+      echo "[!] WARNING: Detected stale lock from terminated process (PID: ${LOCK_PID:-unknown}). Reclaiming lock..." >&2
+      rm -rf "$LOCK_DIR"
+      if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+        echo "ERROR: Failed to acquire lock after clearing stale lock directory." >&2
+        exit 1
+      fi
+    else
+      echo "ERROR: Another patch operation is currently running (PID: $LOCK_PID)." >&2
+      exit 1
+    fi
+  fi
+
+  echo "$$" > "$LOCK_DIR/pid"
+  if [ -f /proc/sys/kernel/random/boot_id ]; then
+    cat /proc/sys/kernel/random/boot_id > "$LOCK_DIR/boot_id" 2>/dev/null || true
+  fi
+}
+
+release_lock() {
+  rm -rf "$LOCK_DIR" 2>/dev/null || true
+}
 
 SUCCESS=0
 TRANSACTION_ACTIVE=0
@@ -48,27 +136,32 @@ CLEANED_UP=0
 
 rollback_from_backup() {
   local BDIR="$1"
+  if [ "$TRANSACTION_ACTIVE" -eq 0 ]; then
+    return 0
+  fi
+  # Disarm subsequent trap invocations to prevent duplicate rollback
+  TRANSACTION_ACTIVE=0
+
   echo "[*] Rolling back libraries to pre-patch state from $BDIR..." >&2
   echo "STATUS:ROLLING_BACK" >> "$TX_FILE"
   sync
 
   am force-stop --user 0 "$PACKAGE" 2>/dev/null || true
 
-  # Restore original libraries
+  # Restore original libraries with exact file permissions preserved
   if [ -f "$BDIR/original.sha256" ]; then
     while read -r HASH NAME; do
       if [ -f "$BDIR/original/$NAME" ]; then
         cp -p "$BDIR/original/$NAME" "$LIB/$NAME.c10h-tmp.$$"
         mv "$LIB/$NAME.c10h-tmp.$$" "$LIB/$NAME"
+        restorecon -F "$LIB/$NAME" 2>/dev/null || true
       fi
     done < "$BDIR/original.sha256"
   fi
 
-  # Clean up patched artifacts and temp files
-  rm -f "$LIB/libbili_o.so" "$LIB/libbsl.so" "$LIB"/*.c10h-tmp.* "$LIB"/*.tmp.*
+  # Clean up project-created patched artifacts and project temp files ONLY
+  rm -f "$LIB/libbili_o.so" "$LIB/libbsl.so" "$LIB"/*.c10h-tmp.*
 
-  chmod 755 "$LIB"/*.so 2>/dev/null || true
-  restorecon -RF "$LIB" 2>/dev/null || true
   sync
 
   # Verify restored state
@@ -90,41 +183,32 @@ cleanup() {
     return
   fi
   CLEANED_UP=1
-  rmdir "$LOCK_DIR" 2>/dev/null || true
+  # CRITICAL: Keep exclusive lock held throughout entire rollback process!
   if [ "$SUCCESS" -ne 1 ] && [ "$TRANSACTION_ACTIVE" -eq 1 ]; then
     echo "[!] Transaction interrupted or failed (exit code $EXIT_CODE). Initiating rollback..." >&2
     if [ -n "$ACTIVE_BACKUP" ] && [ -d "$ACTIVE_BACKUP/original" ]; then
-      rollback_from_backup "$ACTIVE_BACKUP"
+      rollback_from_backup "$ACTIVE_BACKUP" || true
     fi
   fi
+  # Release lock ONLY after rollback and state persistence have completely finished
+  release_lock
 }
 trap cleanup EXIT INT TERM
 
-MODE="${1:-}"
-
-if [ "$MODE" = "status" ]; then
-  echo "=== Bilibili BoringSSL Patch Status ==="
-  echo "Target Package : $PACKAGE"
-  echo "Library Dir    : $LIB"
-  echo "State Dir      : $STATE_DIR"
-  if [ -f "$LIB/libbili_o.so" ] || [ -f "$LIB/libbsl.so" ]; then
-    echo "Device Status  : Patched (libbili_o.so / libbsl.so present)"
+# Obtain application version identity
+get_app_version() {
+  if [ -n "${MOCK_APP_VERSION:-}" ]; then
+    echo "$MOCK_APP_VERSION"
+  elif [ -n "${APK:-}" ]; then
+    dumpsys package "$PACKAGE" 2>/dev/null | grep -E 'versionName|versionCode' | tr -d ' \r' | tr '\n' ';' || true
   else
-    echo "Device Status  : Unpatched (original state)"
+    echo "none"
   fi
-  if [ -f "$TX_FILE" ]; then
-    LAST_STATUS=$(grep '^STATUS:' "$TX_FILE" 2>/dev/null | tail -n 1 | cut -d: -f2- || true)
-    LAST_BACKUP=$(grep '^BACKUP_DIR:' "$TX_FILE" 2>/dev/null | tail -n 1 | cut -d: -f2- || true)
-    echo "Last Tx Status : ${LAST_STATUS:-None}"
-    echo "Last Backup    : ${LAST_BACKUP:-None}"
-  else
-    echo "Last Tx Status : No transaction history"
-  fi
-  SUCCESS=1
-  exit 0
-fi
+}
 
 if [ "$MODE" = "restore" ]; then
+  acquire_lock
+
   INPUT="${2:-}"
   if [ -z "$INPUT" ]; then
     if [ -f "$TX_FILE" ]; then
@@ -162,10 +246,27 @@ if [ "$MODE" = "restore" ]; then
     exit 1
   fi
 
+  # HARD GUARD: Cross-application version / path mismatch protection
   if [ -f "$INPUT/lib.path" ]; then
     REC_LIB=$(cat "$INPUT/lib.path" 2>/dev/null || true)
-    if [ -n "$REC_LIB" ] && [ "$REC_LIB" != "$LIB" ] && [ -z "${MOCK_LIB_DIR:-}" ]; then
-      echo "WARNING: Target library path changed (recorded: $REC_LIB, current: $LIB)." >&2
+    if [ -n "$REC_LIB" ] && [ "$REC_LIB" != "$LIB" ]; then
+      echo "ERROR: Target library path mismatch!" >&2
+      echo "       Recorded in backup : $REC_LIB" >&2
+      echo "       Current application: $LIB" >&2
+      echo "Refusing to restore across different application installations/paths." >&2
+      exit 1
+    fi
+  fi
+
+  if [ -f "$INPUT/app_version.txt" ]; then
+    REC_VER=$(cat "$INPUT/app_version.txt" 2>/dev/null || true)
+    CURR_VER=$(get_app_version)
+    if [ -n "$REC_VER" ] && [ -n "$CURR_VER" ] && [ "$REC_VER" != "VERSION:${CURR_VER}" ]; then
+      echo "ERROR: Application version identity mismatch!" >&2
+      echo "       Recorded in backup : $REC_VER" >&2
+      echo "       Current installed  : VERSION:${CURR_VER}" >&2
+      echo "Refusing to restore backup from a different application version to avoid ABI breakage." >&2
+      exit 1
     fi
   fi
 
@@ -175,14 +276,15 @@ if [ "$MODE" = "restore" ]; then
 
   am force-stop --user 0 "$PACKAGE" 2>/dev/null || true
 
+  # Restore libraries preserving exact file permissions
   while read -r HASH NAME; do
     cp -p "$INPUT/original/$NAME" "$LIB/$NAME.c10h-tmp.$$"
     mv "$LIB/$NAME.c10h-tmp.$$" "$LIB/$NAME"
+    restorecon -F "$LIB/$NAME" 2>/dev/null || true
   done < "$INPUT/original.sha256"
 
-  rm -f "$LIB/libbili_o.so" "$LIB/libbsl.so" "$LIB"/*.c10h-tmp.* "$LIB"/*.tmp.*
-  chmod 755 "$LIB"/*.so 2>/dev/null || true
-  restorecon -RF "$LIB" 2>/dev/null || true
+  # Clean up project-created patched artifacts and temp files ONLY
+  rm -f "$LIB/libbili_o.so" "$LIB/libbsl.so" "$LIB"/*.c10h-tmp.*
   sync
 
   echo "[*] Verifying restored libraries in $LIB..."
@@ -202,6 +304,8 @@ if [ "$MODE" = "restore" ]; then
 fi
 
 if [ "$MODE" = "apply" ]; then
+  acquire_lock
+
   INPUT="${2:-}"
   [ -n "$INPUT" ] || { echo "Usage: sh $0 apply PREPARED_DIR" >&2; exit 1; }
   [ -d "$INPUT" ] || { echo "ERROR: Directory $INPUT does not exist." >&2; exit 1; }
@@ -255,6 +359,8 @@ if [ "$MODE" = "apply" ]; then
   BACKUP_DIR="$STATE_DIR/backup-${TIMESTAMP}-$$"
   mkdir -p "$BACKUP_DIR/original"
   printf '%s\n' "$LIB" > "$BACKUP_DIR/lib.path"
+  printf '%s\n' "${APK:-none}" > "$BACKUP_DIR/apk.path"
+  echo "VERSION:$(get_app_version)" > "$BACKUP_DIR/app_version.txt"
   cp "$INPUT/original.sha256" "$BACKUP_DIR/original.sha256"
   cp "$INPUT/patched.sha256" "$BACKUP_DIR/patched.sha256"
 
@@ -286,7 +392,7 @@ EOF
 
   am force-stop --user 0 "$PACKAGE" 2>/dev/null || true
 
-  # Atomic copy & rename into place
+  # Atomic copy & rename into place preserving individual file permissions
   while read -r HASH NAME; do
     # Fault injection hook for automated testing
     if [ -n "${FAIL_ON_SO:-}" ] && [ "$NAME" = "$FAIL_ON_SO" ]; then
@@ -301,12 +407,19 @@ EOF
     esac
 
     TEMP_FILE="$LIB/$NAME.c10h-tmp.$$"
+    ORIG_PERM=""
     if [ -f "$LIB/$TEMPLATE" ]; then
       cp -p "$LIB/$TEMPLATE" "$TEMP_FILE" 2>/dev/null || true
+      ORIG_PERM=$(stat -c '%a' "$LIB/$TEMPLATE" 2>/dev/null || true)
     fi
     cat "$INPUT/$NAME" > "$TEMP_FILE"
-    chmod 755 "$TEMP_FILE"
+    if [ -n "$ORIG_PERM" ]; then
+      chmod "$ORIG_PERM" "$TEMP_FILE"
+    else
+      chmod 755 "$TEMP_FILE"
+    fi
     mv "$TEMP_FILE" "$LIB/$NAME"
+    restorecon -F "$LIB/$NAME" 2>/dev/null || true
   done < "$INPUT/patched.sha256"
 
   # Fault injection hook for post-check testing
@@ -318,12 +431,9 @@ EOF
   echo "[*] Post-flight verification: checking applied libraries..."
   if ! (cd "$LIB" && sha256sum -c "$INPUT/patched.sha256" >/dev/null 2>&1); then
     echo "ERROR: Post-patch SHA-256 verification failed! Initiating rollback..." >&2
-    rollback_from_backup "$ACTIVE_BACKUP"
     exit 1
   fi
 
-  chmod 755 "$LIB"/*.so 2>/dev/null || true
-  restorecon -RF "$LIB" 2>/dev/null || true
   sync
 
   echo "STATUS:COMPLETED" >> "$TX_FILE"

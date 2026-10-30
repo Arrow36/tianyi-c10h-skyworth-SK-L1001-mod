@@ -227,17 +227,27 @@ adb shell "sh /data/local/tmp/fix_bilibili_ssl.sh apply /data/local/tmp/<output_
 
 #### 事务状态机与安全性保障
 1. **静态双重校验**：在变更任何文件前，脚本同时比对 `$INPUT/patched.sha256` 与 `$LIB/original.sha256`。若设备上动态库版本不匹配或文件已被损坏，立即拒绝执行并退出。
-2. **完整原位快照**：应用补丁前，将原始库和路径元数据备份至 `/data/local/c10h-bili-state/backup-<TIMESTAMP>` 并校验备份完整性，随后写入 `STATUS:BACKED_UP`。
-3. **原子搬移与自动回滚**：补丁文件先以临时文件名写入，再通过原子 `mv` 替换。若在写入过程中遭遇断电、磁盘满或后置哈希校验失败，`EXIT` 陷阱将立即触发 `rollback_from_backup`，从快照恢复全部原始库并清理补丁残留，记录 `STATUS:ROLLED_BACK`。
-4. **中断事务防御与一键还原**：若因掉电导致事务处于未完成态，再次运行 `apply` 会被硬性拦截并提示恢复；随时可通过以下命令一键恢复至官方纯净状态：
+2. **完整原位快照与元数据保真**：应用补丁前，将原始库、路径元数据、应用版本身份（`versionName`/`versionCode`）与每个库的原始文件权限（如 `0644`/`0755`）备份至 `/data/local/c10h-bili-state/backup-<TIMESTAMP>` 并校验备份完整性，随后写入 `STATUS:BACKED_UP`。
+3. **跨版本恢复硬性阻断**：恢复时严格比对 `lib.path` 与 `app_version.txt`。若用户升级了应用导致安装路径或版本不符，恢复脚本默认硬性阻断执行，防止旧版 `.so` 覆盖新版引发 ABI 不兼容崩溃。
+4. **互斥锁与残留锁自动回收**：执行修改操作时全程持有独占锁，直到回滚或流程彻底完成才释放；`status` 命令纯只读无阻塞。若遇到死机或 `SIGKILL` 导致锁残留，脚本通过进程存活性（`kill -0`）与内核 `boot_id` 自动识别并回收残留锁，杜绝锁死恢复流程。
+5. **异常分级防护模型**：
+   | 故障类型 | 运行时表现 | 预期处理机制 |
+   | :--- | :--- | :--- |
+   | **常规命令失败 / 写入异常** | 磁盘满、IO 错误或命令非 0 退出 | 捕获异常，在保持互斥锁的前提下自动执行 `rollback_from_backup` 复原原版库 |
+   | **后置校验不匹配** | 拷贝后文件哈希未通过验证 | 立即触发单入口回滚，清除补丁残留并还原状态 |
+   | **可处理终止信号 (`INT`/`TERM`)** | 进程收到终止请求 | Shell trap 捕获信号并执行原子回滚 |
+   | **进程被强杀 (`SIGKILL`)** | 进程无法执行退出陷阱 | 留下 `STATUS:APPLYING` 事务记录与锁；重启后自动回收残留锁并由用户运行 `restore` 恢复 |
+   | **突然物理断电** | 机器立即掉电停机 | 无法在关机瞬时回滚；下次开机根据 WAL 事务日志提示未完成，无参运行 `restore` 即可完整恢复 |
+
+随时可通过以下命令一键恢复至官方纯净状态或查看状态：
 ```sh
-# 恢复至最近一次有效快照
+# 恢复至最近一次有效快照（自动识别最新快照与回收残留锁）
 adb shell "sh /data/local/tmp/fix_bilibili_ssl.sh restore"
 
 # 或指定具体快照目录恢复
 adb shell "sh /data/local/tmp/fix_bilibili_ssl.sh restore /data/local/c10h-bili-state/<BACKUP_DIR>"
 
-# 查看当前补丁及事务状态
+# 查看当前补丁、事务及持锁状态（纯只读，无需锁）
 adb shell "sh /data/local/tmp/fix_bilibili_ssl.sh status"
 ```
 修改后，B 站动态库精准绑定私有副本，新版客户端完美运行，视频播放与弹幕一切正常！

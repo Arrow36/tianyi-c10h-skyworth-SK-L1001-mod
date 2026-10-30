@@ -384,6 +384,34 @@ exit 0
         (mock_bin / 'setprop').write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
         (mock_bin / 'restorecon').write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
 
+        perms_db = tmp_path / 'mock_perms.txt'
+        chmod_code = f'''#!/bin/sh
+MODE="$1"
+shift
+for f in "$@"; do
+    echo "$MODE $f" >> "{perms_db.as_posix()}"
+done
+exit 0
+'''
+        (mock_bin / 'chmod').write_text(chmod_code, encoding='utf-8')
+
+        stat_code = f'''#!/bin/sh
+if [ "$1" = "-c" ] && [ "$2" = "%a" ]; then
+    TARGET="$3"
+    if [ -f "{perms_db.as_posix()}" ]; then
+        RECORDED=$(grep " $TARGET$" "{perms_db.as_posix()}" 2>/dev/null | tail -n 1 | cut -d' ' -f1 || true)
+        if [ -n "$RECORDED" ]; then
+            echo "$RECORDED"
+            exit 0
+        fi
+    fi
+    echo "755"
+    exit 0
+fi
+/bin/stat "$@"
+'''
+        (mock_bin / 'stat').write_text(stat_code, encoding='utf-8')
+
         dumpsys_file = tmp_path / 'dumpsys_output.txt'
         dumpsys_file.write_text(mock_dumpsys_text, encoding='utf-8')
 
@@ -780,6 +808,193 @@ exit 0
             self.assertEqual(res.returncode, 1)
             self.assertIn('Backup files corrupted! Hash verification failed', res.stderr)
             self.assertIn('Device state has NOT been altered', res.stderr)
+
+    def test_shell_bilibili_stale_lock_recovery_on_interrupted_transaction(self):
+        """P0 regression test: Stale lock left after power outage/SIGKILL must be reclaimed during restore."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            state_dir = tmp_path / 'state'
+            state_dir.mkdir()
+            lib_dir = tmp_path / 'lib'
+            prep_dir = tmp_path / 'prepared'
+            self._setup_mock_bilibili_libs(lib_dir)
+
+            prepare(lib_dir, prep_dir)
+
+            # 1. Setup interrupted transaction
+            backup_dir = state_dir / 'backup-12345-999'
+            backup_orig = backup_dir / 'original'
+            backup_orig.mkdir(parents=True)
+            for name in ('libcrypto.so', 'libssl.so', 'libignet.so'):
+                (backup_orig / name).write_bytes(elf_fixture())
+            shutil.copy(prep_dir / 'original.sha256', backup_dir / 'original.sha256')
+            shutil.copy(prep_dir / 'patched.sha256', backup_dir / 'patched.sha256')
+            (backup_dir / 'lib.path').write_text(lib_dir.as_posix(), encoding='utf-8')
+
+            tx_file = state_dir / 'tx_state.txt'
+            tx_file.write_text(
+                f"TIMESTAMP:12345\nLIB:{lib_dir.as_posix()}\nBACKUP_DIR:{backup_dir.as_posix()}\nSTATUS:BACKED_UP\nSTATUS:APPLYING\n",
+                encoding='utf-8'
+            )
+            (lib_dir / 'libbili_o.so').write_bytes(b'partial_artifact')
+
+            # 2. Leave stale lock directory with a dead PID
+            lock_dir = state_dir / 'lock'
+            lock_dir.mkdir()
+            (lock_dir / 'pid').write_text('99999999\n', encoding='utf-8')
+            (lock_dir / 'boot_id').write_text('dead-boot-uuid-from-previous-session\n', encoding='utf-8')
+
+            env = self.create_mock_env(tmp_path)
+            env['STATE_DIR'] = state_dir.as_posix()
+            env['MOCK_LIB_DIR'] = lib_dir.as_posix()
+
+            script = (ROOT / 'scripts/fix_bilibili_ssl.sh').as_posix()
+
+            # 3. Status must work even with lock present
+            res_status = subprocess.run([self.sh_exe, script, 'status'],
+                                        env=env, capture_output=True, text=True)
+            self.assertEqual(res_status.returncode, 0)
+            self.assertIn('Stale lock present', res_status.stdout)
+
+            # 4. restore must reclaim stale lock and successfully restore
+            res_restore = subprocess.run([self.sh_exe, script, 'restore'],
+                                         env=env, capture_output=True, text=True)
+            self.assertEqual(res_restore.returncode, 0, f"restore failed: {res_restore.stderr}")
+            self.assertIn('Detected stale lock from terminated process', res_restore.stderr)
+            self.assertFalse((lib_dir / 'libbili_o.so').exists())
+            self.assertFalse(lock_dir.exists(), "Lock must be released after restore finishes")
+
+            tx_text = tx_file.read_text(encoding='utf-8')
+            self.assertIn('STATUS:RESTORED', tx_text)
+
+    def test_shell_bilibili_active_lock_blocks_concurrency(self):
+        """Active lock from running process must block concurrent apply/restore."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            state_dir = tmp_path / 'state'
+            state_dir.mkdir()
+            lib_dir = tmp_path / 'lib'
+            prep_dir = tmp_path / 'prepared'
+            self._setup_mock_bilibili_libs(lib_dir)
+
+            prepare(lib_dir, prep_dir)
+
+            lock_dir = state_dir / 'lock'
+            lock_dir.mkdir()
+
+            # Spawn a background sleep process in sh so lock PID is an active shell process
+            bg = subprocess.Popen([self.sh_exe, '-c', f'echo $$ > "{lock_dir.as_posix()}/pid"; sleep 30'],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                import time
+                for _ in range(20):
+                    if (lock_dir / 'pid').exists() and (lock_dir / 'pid').read_text().strip():
+                        break
+                    time.sleep(0.1)
+
+                env = self.create_mock_env(tmp_path)
+                env['STATE_DIR'] = state_dir.as_posix()
+                env['MOCK_LIB_DIR'] = lib_dir.as_posix()
+
+                script = (ROOT / 'scripts/fix_bilibili_ssl.sh').as_posix()
+                res_apply = subprocess.run([self.sh_exe, script, 'apply', prep_dir.as_posix()],
+                                           env=env, capture_output=True, text=True)
+                self.assertEqual(res_apply.returncode, 1)
+                self.assertIn('Another patch operation is currently running', res_apply.stderr)
+            finally:
+                bg.terminate()
+                bg.wait()
+
+    def test_shell_bilibili_permission_fidelity_preserved(self):
+        """P1 regression test: 0644 file permission must be preserved across patch and restore cycles."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            state_dir = tmp_path / 'state'
+            lib_dir = tmp_path / 'lib'
+            prep_dir = tmp_path / 'prepared'
+            self._setup_mock_bilibili_libs(lib_dir)
+
+            prepare(lib_dir, prep_dir)
+
+            env = self.create_mock_env(tmp_path)
+            env['STATE_DIR'] = state_dir.as_posix()
+            env['MOCK_LIB_DIR'] = lib_dir.as_posix()
+
+            # Set libcrypto.so permission to 0644 via mock perms db
+            perms_db = tmp_path / 'mock_perms.txt'
+            perms_db.write_text(f"644 {(lib_dir / 'libcrypto.so').as_posix()}\n", encoding='utf-8')
+
+            script = (ROOT / 'scripts/fix_bilibili_ssl.sh').as_posix()
+
+            # 1. Apply patch
+            res_apply = subprocess.run([self.sh_exe, script, 'apply', prep_dir.as_posix()],
+                                       env=env, capture_output=True, text=True)
+            self.assertEqual(res_apply.returncode, 0, f"apply failed: {res_apply.stderr}")
+
+            # Check that permissions were preserved
+            res_perm_crypto = subprocess.run([self.sh_exe, '-c', f'stat -c "%a" "{(lib_dir / "libcrypto.so").as_posix()}"'],
+                                             env=env, capture_output=True, text=True)
+            res_perm_bili = subprocess.run([self.sh_exe, '-c', f'stat -c "%a" "{(lib_dir / "libbili_o.so").as_posix()}"'],
+                                           env=env, capture_output=True, text=True)
+            self.assertEqual(res_perm_crypto.stdout.strip(), '644', "libcrypto.so must remain 644 after patch")
+            self.assertEqual(res_perm_bili.stdout.strip(), '644', "libbili_o.so template must inherit 644")
+
+            # 2. Restore patch
+            res_restore = subprocess.run([self.sh_exe, script, 'restore'],
+                                         env=env, capture_output=True, text=True)
+            self.assertEqual(res_restore.returncode, 0, f"restore failed: {res_restore.stderr}")
+
+            # Check that restored libcrypto.so is STILL 644 (not blindly changed to 0755)
+            res_perm_restored = subprocess.run([self.sh_exe, '-c', f'stat -c "%a" "{(lib_dir / "libcrypto.so").as_posix()}"'],
+                                               env=env, capture_output=True, text=True)
+            self.assertEqual(res_perm_restored.stdout.strip(), '644', "libcrypto.so must remain 644 after restore")
+
+    def test_shell_bilibili_cross_version_restore_hard_blocked(self):
+        """P1 regression test: restore across different lib paths or app versions must be strictly rejected."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            state_dir = tmp_path / 'state'
+            state_dir.mkdir()
+            lib_dir = tmp_path / 'lib'
+            prep_dir = tmp_path / 'prepared'
+            self._setup_mock_bilibili_libs(lib_dir)
+
+            prepare(lib_dir, prep_dir)
+
+            # Setup backup for version 7.50.0 and path /old/path
+            backup_dir = state_dir / 'backup-crossver'
+            backup_orig = backup_dir / 'original'
+            backup_orig.mkdir(parents=True)
+            for name in ('libcrypto.so', 'libssl.so', 'libignet.so'):
+                (backup_orig / name).write_bytes(elf_fixture())
+            shutil.copy(prep_dir / 'original.sha256', backup_dir / 'original.sha256')
+
+            # 1. Test path mismatch hard block
+            (backup_dir / 'lib.path').write_text('/different/app/path/lib/arm', encoding='utf-8')
+            (backup_dir / 'app_version.txt').write_text('VERSION:versionName=7.50.0\n', encoding='utf-8')
+
+            env = self.create_mock_env(tmp_path)
+            env['STATE_DIR'] = state_dir.as_posix()
+            env['MOCK_LIB_DIR'] = lib_dir.as_posix()
+            env['MOCK_APP_VERSION'] = 'versionName=7.50.0'
+
+            script = (ROOT / 'scripts/fix_bilibili_ssl.sh').as_posix()
+            res_path = subprocess.run([self.sh_exe, script, 'restore', backup_dir.as_posix()],
+                                      env=env, capture_output=True, text=True)
+            self.assertEqual(res_path.returncode, 1)
+            self.assertIn('Target library path mismatch!', res_path.stderr)
+            self.assertIn('Refusing to restore across different application installations/paths', res_path.stderr)
+
+            # 2. Test version identity mismatch hard block (path matches, version differs)
+            (backup_dir / 'lib.path').write_text(lib_dir.as_posix(), encoding='utf-8')
+            (backup_dir / 'app_version.txt').write_text('VERSION:versionName=7.50.0\n', encoding='utf-8')
+            env['MOCK_APP_VERSION'] = 'versionName=7.60.0'  # Upgraded app version
+
+            res_ver = subprocess.run([self.sh_exe, script, 'restore', backup_dir.as_posix()],
+                                     env=env, capture_output=True, text=True)
+            self.assertEqual(res_ver.returncode, 1)
+            self.assertIn('Application version identity mismatch!', res_ver.stderr)
+            self.assertIn('Refusing to restore backup from a different application version', res_ver.stderr)
 
 
 if __name__ == '__main__':
