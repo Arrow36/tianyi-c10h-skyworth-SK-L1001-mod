@@ -1,0 +1,523 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 说明
+音频左右声道测试：Audio
+耳机左右声道测试：Headset
+背光测试：BackLight
+蓝牙测试：Bluetooth
+摄像头测试：Camera
+2D/3D摄像头：DCamera
+以太网吞吐量测试：EthernetMbps
+WiFi吞吐量测试：WiFiMbps
+按键/遥控器、uboot按键测试：HardKey
+模拟音量加减按键测试：KeyEvent
+HDMI测试：Hdmi
+以太网测试：LAN
+液晶屏测试：LCD
+通电LED灯测试：LED
+4G网络测试：Mobile
+录音、麦、MIC测试：Recorder
+Rtc测试：Rtc
+串口测试：SerialPort
+USB、存储测试、TF卡、U盘测试：Storage
+WiFi测试：WiFi
+电池测试：Battery
+触摸屏测试：TPTouch
+MAC生成条形码和二维码测试：BarCode
+设备信息：DeviceInfo
+设备存储测试：Storage
+USB测试：UsbCopy
+升级模组测试:BinUpdate
+烧录写号：BurnNumber
+气密性测试：TightnessTest
+mic一致性测试:MicConsistency
+质检写号校验测试项：BurnNumberInfo
+红外测试：Infrared
+USER模式设置：SetUserMode
+授权码设置:SetLicense
+-->
+<ConfigFile>
+    <!-- 默认 测试项 Bluetooth,WiFi,LAN,Storage,HardKey,Rtc,Audio,Hdmi,Recorder -->
+    <!-- 奥比 测试项 Bluetooth,WiFi,LAN,Storage,HardKey,Rtc,Audio,Hdmi,Recorder,PwmFan,DCamera,Wakeup -->
+    <!-- AiBright 测试项 Camera,WiFi,Bluetooth,Storage,Audio,Recorder,BackLight,KeyEvent,Sensor,TPTouch,Hdmi,IRSender -->
+    <!-- sk_l1001 测试项 BI,DeviceInfo,Storage,BackLight,LCD,TPTouch,LAN,EthernetMbps,WiFi,Audio,Recorder,Bluetooth,TightnessTest,Camera,Hdmi,HardKey,Battery -->
+    <!-- IPBS8505 测试项 BI,DeviceInfo,Storage,Rtc,WiFi,LAN,Audio,Headset,Bluetooth,Recorder,TightnessTest,Camera,Hdmi,LED -->
+    <!--测试位-->
+
+    <item>
+        <name>测试写号</name><!--测试位名称-->
+        <userCode>ZZL3</userCode>   <!-- 用户编号 -->
+        <resCode>YK-PACK-IMEI</resCode>  <!-- 资源代码 -->
+        <passWord>111111</passWord><!--密码，如果需要配置-->
+        <order>
+            DeviceInfo,BI
+        </order><!--测试项顺序,以逗号间隔，从左往右依次顺序测试-->
+    </item>
+
+    <TestWorker>
+        <AudioCardType>-1</AudioCardType> <!-- 声卡类型，-1：不处理，1:科大讯飞，（设置后会对应执行关掉录音指令）-->
+        <ConfigFromUSB>false</ConfigFromUSB> <!-- 配置文件是否来自U盘-->
+        <ScreenServerTime>100</ScreenServerTime> <!-- 启动屏保时间，单位分钟-->
+        <titlename>福建移动146497</titlename>
+        <savelog>false</savelog> <!-- 是否保存日志-->
+        <login>false</login><!-- 是否进行登录认证 -->
+        <userChickLock>false</userChickLock>  <!-- 用户锁，开启后，自动测试项，无法通过手动点PASS和FAIL，手动项，需要操作的无结果前，也无法点击 -->
+        <station>1</station><!--工位-->
+        <No>1</No><!--测试编号-->
+        <!--上传服务器地址-->
+        <HttpUrl>http://218.64.89.153:8099/EIS/MES/helper/dllMain</HttpUrl>
+        <!--配置了，登录时，同步服务器时间戳-->
+        <HttpGetTimeSpan>false</HttpGetTimeSpan>
+
+        <!--是否要上传-->
+        <isPushHttp>false</isPushHttp>
+
+    </TestWorker>
+    <!-- 烧录、更新模组 -->
+    <UpdateConfig>
+        <Module>
+            <timeOut>10000</timeOut>
+            <updateCmd>update_csk6012.sh /system/etc/csk.bin</updateCmd>
+            <tarVersion>1.1.0</tarVersion>
+        </Module>
+    </UpdateConfig>
+    <!-- 更新touch屏驱 -->
+    <UpdateTouchConfig isAuto="true">
+        <timeOut>3000</timeOut>
+        <updateCmd>update_jadard_touch.sh -u JD9366TC_CSOT10P1_YK_SKYWORTH_FW0x02AB09_CID0x0C_LV_20260715.bin</updateCmd>  <!-- 更新命令 -->
+        <readVarCmd>update_jadard_touch.sh -q</readVarCmd>  <!-- 查询命令 -->
+        <compareType>EQ</compareType> <!-- 比对方式：EQ(等于), GTE(大于等于) 等 -->
+        <VarModule>
+            <name>FW_VER</name>      <!-- 需判断版本号的名称 -->
+            <var>0002ab09</var>      <!-- 判断版本号，如果不相同就会更新 -->:
+        </VarModule>
+        <VarModule>
+            <name>FW_CID_VER</name>      <!-- 需判断版本号的名称 -->
+            <var>0000000c</var>      <!-- 判断版本号，如果不相同就会更新 -->:
+        </VarModule>
+    </UpdateTouchConfig>
+    <!-- 系统基本信息检查 -->
+    
+
+    <!-- 烧号配置 -->
+    <BurnNumber>
+        <QrCodeMode>IDCompleted</QrCodeMode> <!--主界面二维码显示方式  全测试完成:<AllTests>； 写号完成：<IDCompleted>; 一直显示:<Always>; 不显示<Never> -->
+        <TestAllStart>false</TestAllStart> <!-- 启动烧号前，是否需要全部测试完成才能启动 -->
+        <burnType>0</burnType> <!-- 烧录方式：0=本地，1=MES -->
+        <customer>1</customer> <!-- 客户：0=YK，1=skyworth 2：朝歌 3:浪朝 ,  4:星网 , 5:数码视讯-->
+        <showusbmode>true</showusbmode> <!-- 是否显示 usb 切换-->
+        <reworkmode>0</reworkmode> <!-- 返修模式，1：会根据设置的sn去查相关数据，只在customer为1的时候生效 -->
+        <factorymode>0</factorymode> <!-- 恢复出厂设置模式，0：标准的恢复出厂设置模式；1：只写标志位，重启后创维程序执行数据清除操作；2:写标志位后，不自动关机-->
+        <qrcode_1>pcbasn</qrcode_1> <!-- 用来显示产测界面，显示二维码的内存，先显示第一个code配置，为空再显示第二个配置,公版，这里配置pcba_sn -->
+        <qrcode_2>get_db</qrcode_2> <!-- -->
+        <Md5MesKey></Md5MesKey> <!--Md5校验位置，如果从mes获取，就是mes传回的md5字段，如果是本地那json里就要有一列为md5的配置字段-->
+        <localFileInfo>
+            <filePath>/sdcard/factoryTest</filePath>
+            <fileName>test11.json</fileName>
+            <readfilemode>0</readfilemode> <!--读取配置文件的模式 0:以第一个要写的数据为准，如果数据不为空就在配置里去找，1：不管有没有写，都读一个新的数据写入。 -->
+        </localFileInfo>
+
+        <BurnItem isBurn="true">
+            <Key>SN</Key>  <!-- 注:此项不可更改且为唯一性 -->
+            <Name>SN</Name>
+            <MesKey>oPSN</MesKey>
+            <Unifykey>sn</Unifykey>
+            <KeyLength>25</KeyLength>   <!-- 设置需要写入数据的长度 -->
+        </BurnItem>
+
+        <BurnItem isBurn="true">
+            <Key>WIFI_MAC</Key>  <!-- 20250521 新增字段-->
+            <Name>WIFI_MAC</Name>
+            <MesKey>oID1</MesKey>
+            <Unifykey>mac_wifi</Unifykey>
+            <isMac>true</isMac> <!-- 20251027 新增字段,如果获取的数据不是mac格式，自动转成mac格式-->
+        </BurnItem>
+
+        <BurnItem isBurn="true">
+            <Key>RJ45_MAC</Key>  <!-- 注:此项不可更改且为唯一性 -->
+            <Name>MAC</Name>
+            <MesKey>oID2</MesKey> <!-- 对应的服务器key值 -->
+            <Unifykey>mac</Unifykey>
+            <isMac>true</isMac>
+        </BurnItem>
+
+        <BurnItem isBurn="true">
+            <Key>CMEI</Key>  <!-- 注:此项不可更改且为唯一性 -->
+            <Name>CMEI</Name>
+            <MesKey>oIMEI1</MesKey>
+            <Unifykey>cmei</Unifykey>
+            <KeyLength>15</KeyLength>   <!-- 设置需要写入数据的长度 -->
+            <startWith>1110</startWith>   <!-- 前缀校验，写入的数据前缀需要与设置的相同 -->
+        </BurnItem>
+
+        <BurnItem isBurn="true">
+            <Key>CMCCPWD</Key>  <!-- 注:此项不可更改且为唯一性 -->
+            <Name>CMCCPWD</Name>
+            <MesKey>oIMEI2</MesKey>
+            <Unifykey>cmccpwd</Unifykey>
+        </BurnItem>
+
+        <BurnItem isBurn="true">
+            <Key>STBID</Key>  <!-- 注:此项不可更改且为唯一性 -->
+            <Name>STBID</Name>
+            <MesKey>oID3</MesKey>
+            <Unifykey>usid</Unifykey>
+        </BurnItem>
+
+
+
+        <BurnItem isBurn="true">
+            <Key>date</Key>  <!-- 注:此项不可更改且为唯一性 -->
+            <Name>PRD_DATE</Name>
+            <MesKey>oCode1</MesKey>
+            <Unifykey>cmcc_date</Unifykey>
+        </BurnItem>
+
+
+        <!--云之声密钥4组 -->
+        <BurnItem isBurn="true">
+            <Key>KWS_OFF</Key>
+            <Name>KWS_OFF</Name>
+            <MesKey>oID3</MesKey>
+            <Unifykey>yzs_kws</Unifykey>
+        </BurnItem>
+
+        <BurnItem isBurn="true">
+            <Key>SSP_CAR_OFF</Key>
+            <Name>SSP_CAR_OFF</Name>
+            <MesKey>oID3</MesKey>
+            <Unifykey>yzs_ssp_car</Unifykey>
+        </BurnItem>
+
+        <BurnItem isBurn="true">
+            <Key>SSP_OFF</Key>
+            <Name>SSP_OFF</Name>
+            <MesKey>oID3</MesKey>
+            <Unifykey>yzs_ssp</Unifykey>
+        </BurnItem>
+
+        <BurnItem isBurn="true">
+            <Key>VADNN_OFF</Key>
+            <Name>VADNN_OFF</Name>
+            <MesKey>oID3</MesKey>
+            <Unifykey>yzs_vadnn</Unifykey>
+        </BurnItem>
+
+
+    </BurnNumber>
+
+    <!-- 老化配置信息-->
+    <Stress>
+        <showThrApp>false</showThrApp> <!-- 是否使用第三方老化应用 -->
+        <onlyTask>false</onlyTask>                                              <!--onlyTask == true为只进行老化，== false为先进行厂测-->
+        <single>true</single>                                                   <!--singer == true为只运行一次，== false为一直启动老化-->
+        <playFile>newvideo_264,newvideo_265,video</playFile><!--打包视频可以配置:video_lcd，media，newvideo_264，newvideo_265，video， 用","号分隔配置多个，可以轮播放多个资源视频，或者为目录视频文件test.mp4。 -->
+        <isShowCamera>true</isShowCamera>
+        <ageingTime>3m</ageingTime>    <!-- 老化时间=时间+单位（d/D:天，h/H:小时, m/M:分钟 s/S:秒）-->
+        <showBattery>true</showBattery> <!-- 是否显示电池信息，带电池的可能显示，要不数据会异常 -->
+        <BatteryDeltaV>0</BatteryDeltaV> <!-- 充电范围值，结束时电量比开始时电量，需要大于这个值 -->
+        <MaxBatteryVol>100</MaxBatteryVol> <!-- 电量满电值,大于等于这个值，就当电池为满电状态，且开始老化 -->
+        <soundvol>1</soundvol>   <!-- 老化声音大小 -->
+        <AllowRestart>false</AllowRestart> <!-- 是否允许老化中重启再次自动老化 true:允许，false，不允许-->
+        <isUpdateTP>true</isUpdateTP>  <!-- 是否在老化中升级TP固件 true:升级，false，不升级-->
+        <TpRetriesNumber>10</TpRetriesNumber>  <!-- TP升级重试次数-->
+    </Stress>
+
+    <!-- HDMI配置信息-->
+    <Hdmi isAuto="true">
+        <timeOut>3000</timeOut>
+        <playFile>test.mp4</playFile>
+        <definition>-1</definition> <!--0:同显,1:异显 -1:无特殊要求-->
+    </Hdmi>
+
+    <!-- audio信息-->
+    <Audio isAuto="true">                                                    <!--isAuto == true 会加入录音自动算法判断，需自动判断通过才能手动点pass-->
+        <threshold>10</threshold>                                                 <!--自动算法的差值比 -->
+        <timeOut>5000</timeOut>                                                 <!--若自动调转，3秒超时后自动调转执行下一项-->
+        <cycleCount>5</cycleCount>                                              <!--循环次数-->
+        <audioFileName>audio.wav</audioFileName>                                <!--音频文件名称-->
+        <soundvol>30</soundvol>                                                 <!--音量大小写1-100 -->
+        <ChannelMode>Stereo</ChannelMode>  <!--声道模式 <左声道:Left>  <右声道:Right> <双声道:Stereo> -->
+    </Audio>
+    <!-- 以太网 -->
+    <Lan isAuto="true">
+        <timeOut>1</timeOut>
+        <autoclosewifi>false</autoclosewifi> <!-- 测试以太网的时候，自动断开wifi-->
+        <speed>90</speed>   <!-- 是否判断 千兆的还是百兆，-1 则不判断-->
+        <point>/sys/class/net/eth0/speed</point>     <!-- 读取的节点-->
+    </Lan>
+
+    <!--网络吞吐量测试信息-->
+    <!-- 吞吐量信息 工厂：192.168.88.99  内部测试：192.168.0.152 -->
+    <Mbps isAuto="false">
+        <timeOut>3000</timeOut>
+        <port>5201</port>                       <!-- 指定测试端口，默认为5201 -->
+        <bandwidth>1000M</bandwidth>            <!-- 带宽限制，默认为1000M -->
+        <address>192.168.0.168</address>        <!-- 服务端地址，默认为127.0.0.1 -->
+        <downMode>true</downMode>               <!-- 是否为下行速率测试，默认为下行测试，false为 上行测试-->
+        <bandwidth_sender>50</bandwidth_sender>        <!-- 测试通过的标准发送速率 单位是M, 默认是50M-->
+        <bandwidth_receiver>50</bandwidth_receiver>    <!-- 测试通过的标准接收速率 单位是M, 默认是50M -->
+    </Mbps>
+    <!-- wifi信息-->
+    <WiFi isAuto="true">                                                       <!--isAuto == true为自动调转，== false为手动-->
+        <timeOut>1</timeOut>                                                 <!--若自动调转，3秒超时后自动调转执行下一项-->
+        <isWiFiConnect>true</isWiFiConnect>
+        <minSignalState>true</minSignalState>
+        <minSignal>-60</minSignal>                                               <!-- 最低信号值-->
+        <standard></standard>  <!-- 判断当前wifi为5还是6 -->
+        <isDisConnect>false</isDisConnect>   <!-- 退出的时候，是否断开已连接的wifi -->
+
+        <WiFiRssipoint>cat /sys/class/w2_get_bcn_rssi/w2_get_bcn_rssi</WiFiRssipoint> <!-- 第一个wifi天线的信号值 -->
+        <WiFiRssiVol>wf0: (-?\d+) dbm|wf1: (-?\d+) dbm</WiFiRssiVol> <!-- 获取数据的正则表达式 -->
+        <WiFi_1_RssiSignal>-60</WiFi_1_RssiSignal> <!-- 第一个wifi天线的信号值 -->
+        <WiFi_2_RssiSignal>-60</WiFi_2_RssiSignal> <!-- 第二个wifi天线的信号值 -->
+
+        <WiFiConnectInfo>
+            <ssid>yekerd10</ssid>
+            <password>yekerv587</password>
+            <sigalStandard>-50</sigalStandard>                                   <!--相对WiFi的信号最底标准，值范围0-100，值越小表示信号越好-->
+            <wifimode>2.4G</wifimode>  <!-- 当前wifi为2.4G还是5G，填 5G或2.4G -->
+        </WiFiConnectInfo>
+
+    </WiFi>
+
+
+    <!-- 蓝牙信息-->
+    <Bluetooth isAuto="true">                                                  <!--isAuto == true为自动调转，== false为手动-->
+        <timeOut>1000</timeOut>                                               <!--若自动调转，3秒超时后自动调转执行下一项-->
+        <isBluConnect>false</isBluConnect>
+        <bluetoothMac></bluetoothMac>                                          <!-- 79::58:42:0A:C8:C3 -->
+        <minSignalState>true</minSignalState>
+        <minSignal>-70</minSignal>
+    </Bluetooth>
+
+    <!--中性版本录音参数:    -D 0 -d 7 -c 6 -r 16000 -->
+    <!--MKA01-csk芯片版本录音参数: -D 0 -d 1 -c 8 -r 16000 -->
+    <!--MKA02版本录音参数: -D 0 -d 1 -c 4 -r 16000 -->
+    <!--tinycap /sdcard/cap728_ch8.wav -D 1 -d 1 -c 8 -r 16000 -b 16 -T 300-->
+    <!-- 录音测试信息-->
+    <Recorder isAuto="false"> <!--isAuto == true为自动调转，== false为手动-->
+        <recorderCycleCount>3</recorderCycleCount>
+        <!--声卡: -D, 注:设为-1表示不设置此参数-->
+        <card>1</card>
+        <!--设备: -d, 注:设为-1表示不设置此参数-->
+        <device>1</device>
+        <!--通道数: -c, 注:设为-1表示不设置此参数-->
+        <channel>8</channel>
+        <!--采样率: -c, 注:设为-1表示不设置此参数-->
+        <rate>16000</rate>
+        <!--位宽: -b, 注:设为-1表示不设置此参数-->
+        <bits>-1</bits>
+        <!--录音时长: -T，单位秒-->
+        <recordTime>3</recordTime>
+        <!--气密性录音时长: -T,单位秒-->
+        <tightnessTime>5</tightnessTime>
+        <!--一致性录音时长: -T,单位秒-->
+        <micConsistencyTime>5</micConsistencyTime>
+        <!--分开播放通道数，以,分格，只播放列出的通道数据；如果只播放完整文件，这项就不填；范围0到小于channel数，0为第一chanel；-->
+        <playchannel>0,1</playchannel>
+    </Recorder>
+
+    <TightnessTest isAuto="true">                                             <!--无效设置，必须人工判断-->
+        <loop>1</loop>  <!--扫频分段长度，1：只使用一段，100为100段,一般使用1段，多段容易失败-->
+        <isAccurate>false</isAccurate>  <!--作废  精测开关：false:使用以前的平均点对比，true:为使用新的算法测试使用10秒的数据进行测试-->
+        <timeOut>3000</timeOut>
+        <testConsistency>                                                      <!--是否测试mic一致性-->
+            <isTest>true</isTest>
+            <threshold>3</threshold>                                            <!--一致性标准值变化范围-->
+        </testConsistency>
+        <threshold>7</threshold>                                              <!-- 通道对比值变化范围 -->
+        <source>0</source>                                                     <!-- 声音来源：0：设备自放声；1：蓝牙音响放声 -->
+        <soundvol>100</soundvol>                                                <!-- 声音大小1-100-->
+        <bluetoothconfig>
+            <bluetoothname>soundbox_1</bluetoothname>
+            <bluetoothMac>CE:47:24:FF:9A:7E</bluetoothMac><!-- 40:9C:A7:A2:72:51  ; 40:9C:A7:A2:72:3F ; B8:5C:EE:73:00:28  ;41:42:00:E1:3D:58-->
+        </bluetoothconfig>
+        <bluetoothconfig>
+            <bluetoothname>soundbox_2</bluetoothname>
+            <bluetoothMac>09:F1:FE:04:0B:CA</bluetoothMac><!-- 40:9C:A7:A2:72:51  ; 40:9C:A7:A2:72:3F ; B8:5C:EE:73:00:28  ;41:42:00:E1:3D:58-->
+        </bluetoothconfig>
+        <bluetoothconfig>
+            <bluetoothname>soundbox_3</bluetoothname>
+            <bluetoothMac>D0:38:0F:F0:FA:07</bluetoothMac><!-- 40:9C:A7:A2:72:51  ; 40:9C:A7:A2:72:3F ; B8:5C:EE:73:00:28  ;41:42:00:E1:3D:58-->
+        </bluetoothconfig>
+        <bluetoothconfig>
+            <bluetoothname>soundbox_4</bluetoothname>
+            <bluetoothMac>98:55:FD:0B:99:0A</bluetoothMac><!-- 40:9C:A7:A2:72:51  ; 40:9C:A7:A2:72:3F ; B8:5C:EE:73:00:28  ;41:42:00:E1:3D:58-->
+        </bluetoothconfig>
+        <bluetoothconfig>
+            <bluetoothname>soundbox_5</bluetoothname>
+            <bluetoothMac>58:EA:1F:FE:4C:A8</bluetoothMac><!-- 40:9C:A7:A2:72:51  ; 40:9C:A7:A2:72:3F ; B8:5C:EE:73:00:28  ;41:42:00:E1:3D:58-->
+        </bluetoothconfig>
+        <bluetoothconfig>
+            <bluetoothname>soundbox_6</bluetoothname>
+            <bluetoothMac>F4:4E:FD:83:38:4B</bluetoothMac><!-- 40:9C:A7:A2:72:51  ; 40:9C:A7:A2:72:3F ; B8:5C:EE:73:00:28  ;41:42:00:E1:3D:58-->
+        </bluetoothconfig>
+    </TightnessTest>
+
+    <!-- 存储信息-->
+    <Storage isAuto="true">                                                    	<!--isAuto == true为自动调转，== false为手动-->
+        <timeOut>3000</timeOut>                                                 <!--若自动调转，3秒超时后自动调转执行下一项-->
+        <rangeValue>1</rangeValue>                                              <!-- 上下幅度范围-->
+        <totalMemory>16</totalMemory>                                           <!-- 总容量，单位G-->
+        <availableMemory>12</availableMemory>
+        <compareType>GTE</compareType> <!-- 比对方式：EQ(等于), GTE(大于等于) 等 --><!-- 可用容量，单位G-->
+        <Rom>
+            <name>Rom</name>
+            <value>32.0GB</value>
+        </Rom>
+        <Ram>
+            <name>Ram</name>
+            <value>1.0GB</value>
+        </Ram>
+    </Storage>
+
+    <!--usb拷贝速度-->
+    <UsbCopy isAuto="true">
+        <timeOut>1</timeOut>
+        <copyFile>factoryTest/usbCopyTest.mp4</copyFile>
+        <Usb2Average>10</Usb2Average> <!-- usb2.0 拷贝速度 单位Mb-->
+        <Usb3Average>10</Usb3Average> <!-- usb3.0 拷贝速度 单位Mb-->
+    </UsbCopy>
+
+    <!-- 背光测试信息-->
+    <BackLight isAuto="false">                                                   <!--isAuto == true为自动调转，== false为手动-->
+        <timeOut>3000</timeOut>                                                 <!--若自动调转，3秒超时后自动调转执行下一项-->
+        <progressBarMax>255</progressBarMax>                                    <!--进度条最大值-->
+        <delayMillis>10</delayMillis>                                           <!--进度条更新时间间隔-->
+        <stepValue>1</stepValue>                                                <!--进度条步值-->
+    </BackLight>
+
+    <Sensor isAuto="false">                       <!--无效设置，必须人工判断-->
+        <distance>40</distance>                   <!-- 距离感应器 变化范围 -->
+        <distance_testtime>5</distance_testtime>  <!-- 距离感应器测试时间 默认5秒 -->
+        <distance_timeout>30</distance_timeout>   <!-- 距离感应器测试超时时间 默认15秒 -->
+        <light>40</light>                         <!-- 光感应器 变化范围  -->
+        <light_testtime>5</light_testtime>        <!-- 光感应器测试时间 默认5秒 -->
+        <light_timeout>30</light_timeout>         <!-- 光感应器测试超时时间 默认15秒 -->
+    </Sensor>
+
+    <LED isAuto="false">
+        <timeOut>3000</timeOut>                                                 <!--若自动调转，3秒超时后自动调转执行下一项-->
+        <openTime>1000</openTime>                                               <!--灯亮的时长,如当红灯亮时，1000为红灯亮1秒-->
+        <intervalTime>500</intervalTime>                                        <!--两灯间切换的间隔时间，如灯一灭后过500毫米后灯二再亮-->
+        <Node>
+            <point>/sys/class/leds/sys_led/brightness</point>                    <!--灯节点-->
+            <openValue>1</openValue>                                            <!--点亮灯的值,默认值为0或1-->
+            <closeValue>0</closeValue>                                          <!--点灭灯的值,默认值为0或1-->
+            <filepointtype>0</filepointtype><!--节点:0,接口 1-->
+        </Node>
+    </LED>
+
+    <Mobile isAuto="false">
+        <timeOut>3000</timeOut>                                                 <!--若自动调转，3秒超时后自动调转执行下一项-->
+    </Mobile>
+
+
+    <!-- rtc信息-->
+    <Rtc isAuto="false">                                                        <!--isAuto == true为自动调转，== false为手动-->
+        <timeOut>3000</timeOut>                                                 <!--若自动调转，3秒超时后自动调转执行下一项-->
+        <rtcPath>/sys/class/rtc/rtc0/time</rtcPath>                             <!--rtc控制节点-->
+    </Rtc>
+
+    <!-- 串口测试信息-->
+    <SerialPort isAuto="false">                                                  <!--isAuto == true为自动调转，== false为手动-->
+        <SerialPortDeviceInfo>
+            <tty>dev/ttyUSB0</tty>
+            <baudrate>9600</baudrate>
+        </SerialPortDeviceInfo>
+        <SerialPortDeviceInfo>
+            <tty>dev/ttyUSB1</tty>
+            <baudrate>9600</baudrate>
+        </SerialPortDeviceInfo>
+    </SerialPort>
+    <!-- 电池信息 -->
+    <Battery isAuto="true">   <!--显示电池电量，自动判断需要有充电状态,否则判断为失败-->
+        <timeOut>30000</timeOut>   <!--若自动调转，3秒超时后自动调转执行下一项-->
+        <Vdmin>3500</Vdmin>   <!-- 放电时最小电压 -->
+        <Vdmax>4500</Vdmax>   <!-- 放电时最大电压 -->
+        <extra_status>false</extra_status>        <!--作废 测试时，需插拔一下电源 -->
+        <Vcmin>3500</Vcmin>   <!-- 充电时最小电压 -->
+        <Vcmax>4500</Vcmax>   <!-- 充电时最大电压 -->
+        <DeltaV>20</DeltaV>   <!--比对值 ，插入充电时电压比 > 未插入时电压-->
+        <Cmin>60</Cmin>   <!-- 电池电量  -->
+        <Cmax>90</Cmax>   <!-- 电池电量 -->
+        <BatteryModePoint>sys/class/eta9002/eta9002_mode</BatteryModePoint>   <!-- Kernel检测eta9002芯片内的数据模型是否跟代码内的模型一致 -->
+    </Battery>
+    <!-- 按键/遥控器信息-->
+    <HardKey isAuto="true">                                                    <!--isAuto == true为自动调转，== false为手动-->
+        <timeOut>14000</timeOut>                                                 <!--若自动调转，3秒超时后自动调转执行下一项-->
+        <Key>
+            <keyCode>24</keyCode>                         <!--键值-->
+            <keyName>Vol+</keyName>                       <!--键名称-->
+        </Key>
+        <Key>
+            <keyCode>25</keyCode>                         <!--键值-->
+            <keyName>Vol-</keyName>                       <!--键名称-->
+        </Key>
+        <Key>
+            <keyCode>3</keyCode>                         <!--键值-->
+            <keyName>Home</keyName>                       <!--键名称-->
+        </Key>
+        <Key>
+            <keyCode>91</keyCode>                         <!--键值-->
+            <keyAction>com.android.smart.terminal.action.mic.forbid</keyAction>  <!--按键广播-->
+            <keyName>禁麦</keyName>                        <!--键名称-->
+        </Key>
+        <Key>
+            <keyCode>26</keyCode>                         <!--键值-->
+            <keyName>SOS</keyName>                         <!--键名称-->
+            <keyAction>com.android.smart.terminal.action.power.forbid</keyAction>  <!--按键广播-->
+        </Key>
+    </HardKey>
+    <!--红外测试项配置-->
+    <Infrared isAuto="true"> <!--isAuto为true,则需要外部设备接收发送的红外信号-->
+        <intervalTime>2000</intervalTime>  <!--红外测试命令切换时间间隔-->
+        <InfraredPath>/sys/class/irblaster/irblaster0/send</InfraredPath> <!--模块节点-->
+        <readOrderCount>3</readOrderCount>  <!--连续读到多少条指令则自动PASS，跟isAuto关联-->
+        <isCheckBackData>true</isCheckBackData>  <!--是否校验返回的数据是否正确,false:收到对应发送的数据后，就pass-->
+    </Infrared>
+
+
+    <!--系统指令配置-->
+    <SystemOrder>
+        <!-- 创纬和android 9:  echo 1 > /sys/devices/platform/ff400000.dwc2_a/usb_sw_mode
+            android 14: echo 1 > /sys/devices/platform/soc/soc:crgotg@fe348000/otg_mode
+            星网:setprop vendor.usb.otg_mode DEVICE
+        -->
+        <USB_otg_device_mode>settings put global adb_enabled 1; setprop service.adb.tcp.port 5555; setprop persist.adb.tcp.port 5555; setprop ctc.sky.adbd_debug true; setprop persist.sys.usb.config mtp,adb; setprop sys.usb.config mtp,adb; setprop ctl.restart adbd; setprop ctl.start adbd</USB_otg_device_mode> <!-- 切换USB为device模式命令-->
+        <!-- 创纬和android 9:  echo 0 > /sys/devices/platform/ff400000.dwc2_a/usb_sw_mode
+            android 14: echo 0 > /sys/devices/platform/soc/soc:crgotg@fe348000/otg_mode
+            星网:setprop vendor.usb.otg_mode HOST
+        -->
+        <USB_otg_host_mode>settings put global adb_enabled 1; setprop service.adb.tcp.port 5555; setprop persist.adb.tcp.port 5555; setprop ctc.sky.adbd_debug true; setprop persist.sys.usb.config mtp,adb; setprop sys.usb.config mtp,adb; setprop ctl.restart adbd; setprop ctl.start adbd</USB_otg_host_mode>  <!-- 切换USB为HOST模式命令-->
+        <!--
+            android 9:  touch /mnt/vendor/param/usermode
+            android 14:  echo 0 > /mnt/vendor/factory/mode_persist
+            星网: deviid -f 1
+        -->
+        <UserModeOrder>echo 0 > /mnt/vendor/factory/mode_persist</UserModeOrder> <!-- 恢复出厂设置时切换为用户模式指令-->
+
+        <!--
+            poweroff
+            reboot -p
+            setprop sys.powerctl shutdown
+        -->
+        <PowerOffOrder>setprop sys.powerctl shutdown</PowerOffOrder> <!-- 恢复出厂设置时执行的关机命令-->
+    </SystemOrder>
+
+    <!-- 用户模式设置配置 -->
+    <SetUserMode>
+        <OnOrOff>true</OnOrOff>   <!-- 是否开启 接收广播执行关机-->
+        <PowerOffOrder>poweroff</PowerOffOrder> <!-- 执行关机命令-->
+        <BroadcastAction>com.android.smart.terminal.action.power.forbid</BroadcastAction> <!-- 关机广播 -->
+        <setOrderPoint>setprop service.adb.root 1; setprop service.adb.tcp.port 5555; setprop persist.adb.tcp.port 5555; setprop ctc.sky.adbd_debug true; setprop persist.sys.usb.config mtp,adb; setprop sys.usb.config mtp,adb; setprop ctl.restart adbd; setprop ctl.start adbd; am start -n com.dangbei.tvlauncher/com.dangbei.launcher.ui.main.MainActivity; am force-stop com.yeker.factorytest.tool</setOrderPoint>   <!-- 设置完用户模式，然后执行的命令操作， 可以是加密串口，可以是设置其它节点操作-->
+    </SetUserMode>
+
+    <!--License测试项配置-->
+    <SetLicense isAuto="true"> <!--isAuto为true,-->
+        <timeOut>22000</timeOut>  <!--等待时间-->
+        <ntpdate></ntpdate><!--设置系统时间   date 080714352026  -->
+    </SetLicense>
+
+
+</ConfigFile>
