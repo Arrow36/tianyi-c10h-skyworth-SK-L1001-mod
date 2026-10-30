@@ -235,11 +235,35 @@ adb forward tcp:9222 localabstract:webview_devtools_remote_<PID>
 - **日常使用**：本机为 10.1 寸电容触控屏，绝大部分平板/电视版软件可直接在屏幕上触控点击。
 - **手机无线遥控**：在手机上安装 **ATV Tools** 或支持 Android TV 协议的 ADB 遥控器应用，通过连接设备的 IP（`192.168.x.x:5555`）实现方向键、确认键、音量调节与返回操作，完全无需购买物理遥控器。
 
-### 2. 应用安装架构避坑（重要）
+### 2. 机身实体按键多功能扩展与长短按重映射（免改 vendor + 开机自启）
+本机正面/顶部自带 3 个实体按键。原厂固件下按键功能单一且受限。我们通过“**动态重载 KeyLayout + 极简原生事件监听器 + FactoryTestTool 自启注入**”的组合方案，完全在用户空间（`/data`）实现了多功能按键映射：
+
+| 实体按键 | 对应驱动设备 | 扫描码 (Scancode) | 重映射行为 | 判定阈值 |
+|---|---|---|---|---|
+| **电源键** | `gpio_keypad` | 116 (`KEY_POWER`) | **单按息屏 / 再次单按亮屏**（检测 `dumpsys power` 状态动态执行 223/224） | 单击即时触发 |
+| **F9 键** | `gpio_keypad` | 67 | **短按：返回 (BACK / `keyevent 4`)**<br>**长按：主页 (HOME / `keyevent 3`)** | 松开判定：<0.6s 为返回，≥0.6s 为主页（长按不会误触发返回） |
+| **F10 键** | `adc_keypad` | 68 (原静音) | **短按：确认 (CONFIRM / `keyevent 23`)**<br>**长按：最近任务卡片 (`RecentsActivity`)** | 松开判定：<0.6s 为确认，≥0.6s 呼出后台多任务卡片 |
+
+#### 关键技术亮点
+1. **免写只读 `/vendor` 分区的动态 Layout 注入**：
+   设备的 `/vendor` 分区存在只读硬保护（`mount -o remount,rw /vendor` 会直接被内核拒绝）。我们利用 Android InputManager 的搜索路径机制，将定制的 `.kl` 和 `.idc` 写入 `/data/system/devices/keylayout/`，然后通过驱动总线热插拔指令：
+   ```sh
+   echo gpio_keypad > /sys/bus/platform/drivers/gpio-keypad/unbind
+   echo gpio_keypad > /sys/bus/platform/drivers/gpio-keypad/bind
+   echo adc_keypad > /sys/bus/platform/drivers/adc_keypad/unbind
+   echo adc_keypad > /sys/bus/platform/drivers/adc_keypad/bind
+   ```
+   使内核重新加载输入设备，即刻使自定义 KeyLayout 生效。
+2. **456 字节的微型原生监听器 (`gpio_event_reader`)**：
+   为了保证绝对的响应速度与极低内存占用（不足 0.1MB），使用纯 ARM 汇编编写了 Linux `input_event` 解析器（源码见 `scripts/key_remap/gpio_event_reader.S`），精确捕获微秒级按下/松开时间差，长按不会触发短按的伪事件。
+3. **断电重启无感保活**：
+   在 FactoryTestTool 的自启节点 `<setOrderPoint>` 中植入了 `(sh /data/local/codex-screen-toggle/activate.sh) &`，开机由系统 root 权限服务自动拉起两套按键守护，机器即使拔电冷重启也能全自动维持映射。
+
+### 3. 应用安装架构避坑（重要）
 - 本机硬件为 32 位（`armeabi-v7a`），安装大型应用时**请务必选择 32 位版或全架构通用版（Universal）**。
 - 试图安装纯 64 位包（例如最新版酷安等只有 `arm64-v8a` 的 APK）会直接触发 `INSTALL_FAILED_NO_MATCHING_ABIS` 错误。
 
-### 3. 当前已知体验瑕疵（待后续攻克）
+### 4. 当前已知体验瑕疵（待后续攻克）
 1. **返回主界面壁纸卡顿约 1~2 秒**：由于电信原厂对 SurfaceFlinger 的窗口过渡动画做过深度定制，彻底干掉原厂桌面后，从部分全屏应用点击 Home 键切回当贝桌面时，壁纸层偶尔会发生短暂的重新布局延迟。
 2. **原生 Android 设置未完全独立暴露**：原厂设置被深度裁切，部分高级原生系统设置目前需要通过 Activity Launcher 显式调用内部 Intent（例如 `com.android.settings/.Settings`）才能进入。
 
@@ -253,6 +277,16 @@ adb forward tcp:9222 localabstract:webview_devtools_remote_<PID>
 │   ├── factorytest_config_plain.xml # 明文配置模板（包含 setOrderPoint 注入命令）
 │   └── factorytest_config.xml      # 已加密的工程测试配置（直接刷入 /sdcard/factoryTest/）
 ├── scripts/
+│   ├── key_remap/                  # 机身实体按键长短按映射与电源控制工具包
+│   │   ├── README.md               # 按键映射技术原理与配置说明
+│   │   ├── enable_keys.cmd         # Windows 一键推送与激活批处理
+│   │   ├── activate.sh             # GPIO 按键与总控激活脚本
+│   │   ├── activate_adc.sh         # ADC 按键 (F10) 激活脚本
+│   │   ├── toggle.sh               # GPIO 键行为分流 (电源/返回/主页)
+│   │   ├── adc_toggle.sh           # ADC 键行为分流 (确认/最近任务)
+│   │   ├── gpio_event_reader       # 456 字节极简事件解析二进制 (ARM)
+│   │   ├── gpio_event_reader.S     # 汇编源码
+│   │   └── *.idc / *.kl            # 输入设备属性与布局映射配置
 │   ├── build_autostart_apk.py      # 纯 Python 生成 AutoStartHelper.apk 的构建脚本
 │   ├── debloat.sh                  # 一键冻结 36 个电信/OTA/教育后台的优化脚本
 │   ├── factorytest_crypt.py        # factorytest_config.xml 异或加解密工具
@@ -283,3 +317,9 @@ adb forward tcp:9222 localabstract:webview_devtools_remote_<PID>
    adb push scripts/debloat.sh /data/local/tmp/
    adb shell "sh /data/local/tmp/debloat.sh"
    ```
+5. **部署实体按键多功能长短按映射与息屏控制**：
+   ```sh
+   # Windows 电脑在仓库根目录直接执行批处理并传入设备 IP：
+   scripts\key_remap\enable_keys.cmd <设备IP:5555>
+   ```
+   首次推送后即可脱离电脑使用；配置已写入 FactoryTestTool 自启流程，设备断电重启后依然自动生效。

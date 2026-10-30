@@ -30,7 +30,7 @@ Use this skill when assisting a user with a **China Telecom Tianyi Smart Screen 
 4. In `TestLocationActivity.initData()`, `FactoryTestTool` synchronously executes the `<SystemOrder><setOrderPoint>` tag via `ShellUtils.execCmd(..., false)` as `uid=1000(system)`.
 5. Set `<setOrderPoint>` in `configs/factorytest_config_plain.xml` to:
    ```xml
-   <setOrderPoint>setprop service.adb.root 1; setprop service.adb.tcp.port 5555; setprop persist.adb.tcp.port 5555; setprop ctc.sky.adbd_debug true; setprop persist.sys.usb.config mtp,adb; setprop sys.usb.config mtp,adb; setprop ctl.restart adbd; setprop ctl.start adbd; am start -n com.dangbei.tvlauncher/com.dangbei.launcher.ui.main.MainActivity; am force-stop com.yeker.factorytest.tool</setOrderPoint>
+   <setOrderPoint>setprop service.adb.root 1; setprop service.adb.tcp.port 5555; setprop persist.adb.tcp.port 5555; setprop ctc.sky.adbd_debug true; setprop persist.sys.usb.config mtp,adb; setprop sys.usb.config mtp,adb; setprop ctl.restart adbd; setprop ctl.start adbd; (sh /data/local/codex-screen-toggle/activate.sh) & am start -n com.dangbei.tvlauncher/com.dangbei.launcher.ui.main.MainActivity; am force-stop com.yeker.factorytest.tool</setOrderPoint>
    ```
 6. Encrypt with `python scripts/factorytest_crypt.py configs/factorytest_config_plain.xml configs/factorytest_config.xml` and upload to `/sdcard/factoryTest/factorytest_config.xml` via ES FTP (first time) or `adb push`.
 7. Lock the config file against deletion (`AppBroadcastReceiver` attempts to delete `/sdcard/factoryTest` on `BOOT_COMPLETED` when `SkyFactoryGetVerify()` returns `"pass"`):
@@ -56,3 +56,12 @@ Use this skill when assisting a user with a **China Telecom Tianyi Smart Screen 
 ### Phase 5: Fixing 32-Bit Android 9 `libcrypto.so` / `libssl.so` Symbol Collisions
 - Apps like modern Bilibili (`tv.danmaku.bili`) bundle their own BoringSSL `libcrypto.so` and `libssl.so` (referencing symbols like `EVP_hpke_aes_128_gcm`). Because Android 9 Zygote preloads `/system/lib/libcrypto.so` and `/system/lib/libssl.so`, dynamic linking resolves `DT_NEEDED: libcrypto.so` to the older system library and crashes with `UnsatisfiedLinkError`.
 - Run `scripts/fix_bilibili_ssl.sh` to binary-patch `libcrypto.so` -> `libbili_o.so` (12 bytes) and `libssl.so` -> `libbsl.so` (9 bytes) inside `/data/app/tv.danmaku.bili-*/lib/arm/`.
+
+### Phase 6: Physical Key Remapping & Screen Toggle Daemon
+1. Push `scripts/key_remap/*` to `/data/local/codex-screen-toggle/` on the device and set executable permissions.
+2. The solution remaps:
+   - Power (scancode 116): toggles display sleep/wake via `dumpsys power` and `input keyevent 223/224`.
+   - F9 (scancode 67): short press (<0.6s) -> Back (`keyevent 4`), long press (>=0.6s) -> Home (`keyevent 3`).
+   - F10 (scancode 68): short press (<0.6s) -> Confirm (`keyevent 23`), long press (>=0.6s) -> Recents (`com.android.systemui/.recents.RecentsActivity`).
+3. Uses driver unbind/bind reload trick to apply custom layouts in `/data/system/devices/keylayout/` without modifying read-only `/vendor`.
+4. Executes automatically on boot via FactoryTestTool `<setOrderPoint>`.
