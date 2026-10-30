@@ -1,30 +1,38 @@
 #!/usr/bin/env python3
 """
 build_autostart_apk.py
-Zero-SDK Python generator for AutoStartHelper.apk (com.autostart.factoryhelper v1.1).
-Listens for android.intent.action.BOOT_COMPLETED, waits 5 seconds for Dangbei Launcher
-to settle, and launches com.yeker.factorytest.tool/.activity.StartupActivity to enable
-Wireless Root ADB and auto-close.
+Zero-SDK Python generator for AutoStartHelper APKs.
 
-Dependency: pip install cryptography
+Architecture & Operation:
+- Listens for android.intent.action.BOOT_COMPLETED.
+- Manifest declares android:exported="false" to prevent unauthorized invocations.
+- onReceive() performs strict intent.getAction() verification.
+- Non-blocking execution: Avoids Thread.sleep() or UI-thread blocking. Uses Android's
+  system AlarmManager.setExact(ELAPSED_REALTIME_WAKEUP, SystemClock.elapsedRealtime() + delay, pi)
+  to delegate delayed scheduling to system_server, ensuring crash/kill resilience.
+- In test mode (--test-mode):
+  * Builds isolated package: com.autostart.factoryhelper.test
+  * Targets internal, side-effect-free TestActivity
+  * Leaves production AutoStartHelper.apk and 5555 Root ADB chain completely untouched.
 """
 
 import argparse
-import struct
-import hashlib
-import zlib
-import zipfile
 import base64
 import datetime
+import hashlib
 import pathlib
+import struct
+import zipfile
+import zlib
+
 from cryptography import x509
-from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.serialization import pkcs7
+from cryptography.x509.oid import NameOID
 
 
-def make_axml() -> bytes:
+def make_axml(pkg_name: str = "com.autostart.factoryhelper", is_test: bool = False, exported: bool = False) -> bytes:
     res_strings = [
         ("name", 0x01010003),
         ("enabled", 0x0101000E),
@@ -39,19 +47,25 @@ def make_axml() -> bytes:
         "",
         "manifest",
         "package",
-        "com.autostart.factoryhelper",
-        "1.1",
+        pkg_name,
+        "1.2" if is_test else "1.1",
         "uses-permission",
         "android.permission.RECEIVE_BOOT_COMPLETED",
         "application",
         "receiver",
-        "com.autostart.factoryhelper.BootReceiver",
+        f"{pkg_name}.BootReceiver",
         "intent-filter",
         "action",
         "android.intent.action.BOOT_COMPLETED",
         "category",
         "android.intent.category.DEFAULT",
     ]
+    if is_test:
+        other_strings.extend([
+            "activity",
+            f"{pkg_name}.TestActivity",
+        ])
+
     all_strs = [s for s, _ in res_strings] + other_strings
     s_idx = {s: i for i, s in enumerate(all_strs)}
 
@@ -128,15 +142,61 @@ def make_axml() -> bytes:
             "<HHIIIII", 0x0103, 16, 24, line, NO_STR, NO_STR, s_idx[name]
         )
 
+    app_children = [
+        start_el(
+            "receiver",
+            [
+                attr_str(NS_URI, "name", f"{pkg_name}.BootReceiver"),
+                attr_bool(NS_URI, "enabled", True),
+                attr_bool(NS_URI, "exported", exported),
+            ],
+        ),
+        start_el(
+            "intent-filter",
+            [
+                attr_int(NS_URI, "priority", 0),
+            ],
+        ),
+        start_el(
+            "action",
+            [
+                attr_str(NS_URI, "name", "android.intent.action.BOOT_COMPLETED"),
+            ],
+        ),
+        end_el("action"),
+        start_el(
+            "category",
+            [
+                attr_str(NS_URI, "name", "android.intent.category.DEFAULT"),
+            ],
+        ),
+        end_el("category"),
+        end_el("intent-filter"),
+        end_el("receiver"),
+    ]
+
+    if is_test:
+        app_children.extend([
+            start_el(
+                "activity",
+                [
+                    attr_str(NS_URI, "name", f"{pkg_name}.TestActivity"),
+                    attr_bool(NS_URI, "enabled", True),
+                    attr_bool(NS_URI, "exported", True),
+                ],
+            ),
+            end_el("activity"),
+        ])
+
     xml_chunks = b"".join(
         [
             start_ns(),
             start_el(
                 "manifest",
                 [
-                    attr_int(NS_URI, "versionCode", 2),
-                    attr_str(NS_URI, "versionName", "1.1"),
-                    attr_str(NO_STR, "package", "com.autostart.factoryhelper"),
+                    attr_int(NS_URI, "versionCode", 3 if is_test else 2),
+                    attr_str(NS_URI, "versionName", "1.2" if is_test else "1.1"),
+                    attr_str(NO_STR, "package", pkg_name),
                 ],
             ),
             start_el(
@@ -149,38 +209,7 @@ def make_axml() -> bytes:
             ),
             end_el("uses-permission"),
             start_el("application", []),
-            start_el(
-                "receiver",
-                [
-                    attr_str(
-                        NS_URI, "name", "com.autostart.factoryhelper.BootReceiver"
-                    ),
-                    attr_bool(NS_URI, "enabled", True),
-                    attr_bool(NS_URI, "exported", True),
-                ],
-            ),
-            start_el(
-                "intent-filter",
-                [
-                    attr_int(NS_URI, "priority", 0),
-                ],
-            ),
-            start_el(
-                "action",
-                [
-                    attr_str(NS_URI, "name", "android.intent.action.BOOT_COMPLETED"),
-                ],
-            ),
-            end_el("action"),
-            start_el(
-                "category",
-                [
-                    attr_str(NS_URI, "name", "android.intent.category.DEFAULT"),
-                ],
-            ),
-            end_el("category"),
-            end_el("intent-filter"),
-            end_el("receiver"),
+            *app_children,
             end_el("application"),
             end_el("manifest"),
             end_ns(),
@@ -204,96 +233,134 @@ def uleb128(val: int) -> bytes:
     return bytes(out)
 
 
-def make_dex() -> bytes:
-    strs = sorted(
-        [
-            "<init>",
-            "I",
-            "J",
-            "L",
-            "Landroid/content/BroadcastReceiver;",
-            "Landroid/content/ComponentName;",
-            "Landroid/content/Context;",
-            "Landroid/content/Intent;",
-            "Lcom/autostart/factoryhelper/BootReceiver;",
-            "Ljava/lang/String;",
-            "Ljava/lang/Thread;",
-            "LLL",
-            "LL",
-            "LI",
-            "V",
-            "VJ",
-            "VL",
-            "VLL",
-            "addFlags",
-            "com.yeker.factorytest.tool",
-            "com.yeker.factorytest.tool.activity.StartupActivity",
-            "onReceive",
-            "setClassName",
-            "sleep",
-            "startActivity",
-        ]
-    )
+def make_dex(pkg_name: str = "com.autostart.factoryhelper", is_test: bool = False, delay_ms: int = 5000) -> bytes:
+    target_pkg = pkg_name if is_test else "com.yeker.factorytest.tool"
+    target_cls = f"{pkg_name}.TestActivity" if is_test else "com.yeker.factorytest.tool.activity.StartupActivity"
+
+    raw_strs = [
+        "<init>",
+        "I",
+        "J",
+        "Z",
+        "V",
+        "VI",
+        "VL",
+        "VLL",
+        "VJ",
+        "VJL",
+        "VIJL",
+        "L",
+        "LL",
+        "LLL",
+        "LLILI",
+        "LI",
+        "ZL",
+        "Landroid/app/Activity;",
+        "Landroid/app/AlarmManager;",
+        "Landroid/app/PendingIntent;",
+        "Landroid/content/BroadcastReceiver;",
+        "Landroid/content/ComponentName;",
+        "Landroid/content/Context;",
+        "Landroid/content/Intent;",
+        "Landroid/os/Bundle;",
+        "Landroid/os/SystemClock;",
+        f"L{pkg_name.replace('.', '/')}/BootReceiver;",
+        "Ljava/lang/Object;",
+        "Ljava/lang/String;",
+        "action",
+        "addFlags",
+        "alarm",
+        "android.intent.action.BOOT_COMPLETED",
+        "elapsedRealtime",
+        "equals",
+        "finish",
+        "getAction",
+        "getActivity",
+        "getSystemService",
+        "onCreate",
+        "onReceive",
+        "setClassName",
+        "setExact",
+        target_pkg,
+        target_cls,
+    ]
+    if is_test:
+        raw_strs.append(f"L{pkg_name.replace('.', '/')}/TestActivity;")
+
+    strs = sorted(list(set(raw_strs)))
     s_idx = {s: i for i, s in enumerate(strs)}
 
-    type_strs = sorted(
-        [
-            "Landroid/content/BroadcastReceiver;",
-            "Landroid/content/ComponentName;",
-            "Landroid/content/Context;",
-            "Landroid/content/Intent;",
-            "Lcom/autostart/factoryhelper/BootReceiver;",
-            "Ljava/lang/String;",
-            "Ljava/lang/Thread;",
-            "V",
-            "I",
-            "J",
-        ],
-        key=lambda s: s_idx[s],
-    )
+    raw_types = [
+        "V", "I", "J", "Z",
+        "Landroid/app/Activity;",
+        "Landroid/app/AlarmManager;",
+        "Landroid/app/PendingIntent;",
+        "Landroid/content/BroadcastReceiver;",
+        "Landroid/content/ComponentName;",
+        "Landroid/content/Context;",
+        "Landroid/content/Intent;",
+        "Landroid/os/Bundle;",
+        "Landroid/os/SystemClock;",
+        f"L{pkg_name.replace('.', '/')}/BootReceiver;",
+        "Ljava/lang/Object;",
+        "Ljava/lang/String;",
+    ]
+    if is_test:
+        raw_types.append(f"L{pkg_name.replace('.', '/')}/TestActivity;")
+
+    type_strs = sorted(list(set(raw_types)), key=lambda s: s_idx[s])
     t_idx = {s: i for i, s in enumerate(type_strs)}
 
     proto_defs = [
         ("V", "V", []),
-        ("VJ", "V", ["J"]),
-        ("LI", "Landroid/content/Intent;", ["I"]),
-        ("VL", "V", ["Landroid/content/Intent;"]),
+        ("VL", "V", ["Landroid/os/Bundle;"]),
         ("VLL", "V", ["Landroid/content/Context;", "Landroid/content/Intent;"]),
+        ("VIJL", "V", ["I", "J", "Landroid/app/PendingIntent;"]),
+        ("L", "Ljava/lang/String;", []),
+        ("LL", "Ljava/lang/Object;", ["Ljava/lang/String;"]),
+        ("ZL", "Z", ["Ljava/lang/Object;"]),
+        ("J", "J", []),
+        ("LLILI", "Landroid/app/PendingIntent;", ["Landroid/content/Context;", "I", "Landroid/content/Intent;", "I"]),
+        ("LI", "Landroid/content/Intent;", ["I"]),
         ("LLL", "Landroid/content/Intent;", ["Ljava/lang/String;", "Ljava/lang/String;"]),
     ]
     proto_defs.sort(key=lambda p: (t_idx[p[1]], [t_idx[x] for x in p[2]]))
     p_idx = {(p[1], tuple(p[2])): i for i, p in enumerate(proto_defs)}
 
-    method_defs = [
+    raw_methods = [
+        ("Landroid/app/Activity;", "V", (), "<init>"),
+        ("Landroid/app/Activity;", "V", ("Landroid/os/Bundle;",), "onCreate"),
+        ("Landroid/app/Activity;", "V", (), "finish"),
+        ("Landroid/app/AlarmManager;", "V", ("I", "J", "Landroid/app/PendingIntent;"), "setExact"),
+        ("Landroid/app/PendingIntent;", "Landroid/app/PendingIntent;", ("Landroid/content/Context;", "I", "Landroid/content/Intent;", "I"), "getActivity"),
         ("Landroid/content/BroadcastReceiver;", "V", (), "<init>"),
-        ("Landroid/content/Context;", "V", ("Landroid/content/Intent;",), "startActivity"),
+        ("Landroid/content/Context;", "Ljava/lang/Object;", ("Ljava/lang/String;",), "getSystemService"),
         ("Landroid/content/Intent;", "V", (), "<init>"),
+        ("Landroid/content/Intent;", "Ljava/lang/String;", (), "getAction"),
         ("Landroid/content/Intent;", "Landroid/content/Intent;", ("I",), "addFlags"),
-        (
-            "Landroid/content/Intent;",
-            "Landroid/content/Intent;",
-            ("Ljava/lang/String;", "Ljava/lang/String;"),
-            "setClassName",
-        ),
-        ("Lcom/autostart/factoryhelper/BootReceiver;", "V", (), "<init>"),
-        (
-            "Lcom/autostart/factoryhelper/BootReceiver;",
-            "V",
-            ("Landroid/content/Context;", "Landroid/content/Intent;"),
-            "onReceive",
-        ),
-        ("Ljava/lang/Thread;", "V", ("J",), "sleep"),
+        ("Landroid/content/Intent;", "Landroid/content/Intent;", ("Ljava/lang/String;", "Ljava/lang/String;"), "setClassName"),
+        ("Landroid/os/SystemClock;", "J", (), "elapsedRealtime"),
+        (f"L{pkg_name.replace('.', '/')}/BootReceiver;", "V", (), "<init>"),
+        (f"L{pkg_name.replace('.', '/')}/BootReceiver;", "V", ("Landroid/content/Context;", "Landroid/content/Intent;"), "onReceive"),
+        ("Ljava/lang/String;", "Z", ("Ljava/lang/Object;",), "equals"),
     ]
-    method_defs.sort(key=lambda m: (t_idx[m[0]], s_idx[m[3]], p_idx[(m[1], m[2])]))
-    m_idx = {(m[0], m[3]): i for i, m in enumerate(method_defs)}
+    if is_test:
+        raw_methods.extend([
+            (f"L{pkg_name.replace('.', '/')}/TestActivity;", "V", (), "<init>"),
+            (f"L{pkg_name.replace('.', '/')}/TestActivity;", "V", ("Landroid/os/Bundle;",), "onCreate"),
+        ])
+
+    method_defs = sorted(raw_methods, key=lambda m: (t_idx[m[0]], s_idx[m[3]], p_idx[(m[1], tuple(m[2]))]))
+    m_idx = {(m[0], m[3], tuple(m[2])): i for i, m in enumerate(method_defs)}
 
     hdr_size = 0x70
     str_ids_off = hdr_size
     type_ids_off = str_ids_off + len(strs) * 4
     proto_ids_off = type_ids_off + len(type_strs) * 4
     method_ids_off = proto_ids_off + len(proto_defs) * 12
+    num_classes = 2 if is_test else 1
     class_defs_off = method_ids_off + len(method_defs) * 8
-    data_off = class_defs_off + 32
+    data_off = class_defs_off + num_classes * 32
 
     data = bytearray()
 
@@ -313,79 +380,164 @@ def make_dex() -> bytes:
             for pt in params:
                 data += struct.pack("<H", t_idx[pt])
 
+    # Method 1: BootReceiver.<init>
     align4()
-    code_init_off = data_off + len(data)
-    insns_init = struct.pack(
+    code_boot_init_off = data_off + len(data)
+    insns_boot_init = struct.pack(
         "<HHHH",
         0x1070,
-        m_idx[("Landroid/content/BroadcastReceiver;", "<init>")],
+        m_idx[("Landroid/content/BroadcastReceiver;", "<init>", ())],
         0x0000,
         0x000E,
     )
-    data += (
-        struct.pack("<HHHHII", 1, 1, 1, 0, 0, len(insns_init) // 2) + insns_init
-    )
+    data += struct.pack("<HHHHII", 1, 1, 1, 0, 0, len(insns_boot_init) // 2) + insns_boot_init
 
+    # Method 2: BootReceiver.onReceive
     align4()
-    code_onrec_off = data_off + len(data)
-    insns_onrec = b"".join(
-        [
-            struct.pack("<HH", 0x0016, 5000),
-            struct.pack("<HHH", 0x2071, m_idx[("Ljava/lang/Thread;", "sleep")], 0x0010),
-            struct.pack("<HH", 0x0022, t_idx["Landroid/content/Intent;"]),
-            struct.pack(
-                "<HHH", 0x1070, m_idx[("Landroid/content/Intent;", "<init>")], 0x0000
-            ),
-            struct.pack("<HH", 0x011A, s_idx["com.yeker.factorytest.tool"]),
-            struct.pack(
-                "<HH",
-                0x021A,
-                s_idx["com.yeker.factorytest.tool.activity.StartupActivity"],
-            ),
-            struct.pack(
-                "<HHH",
-                0x306E,
-                m_idx[("Landroid/content/Intent;", "setClassName")],
-                0x0210,
-            ),
-            struct.pack("<HH", 0x0115, 0x1000),
-            struct.pack(
-                "<HHH", 0x206E, m_idx[("Landroid/content/Intent;", "addFlags")], 0x0010
-            ),
-            struct.pack(
-                "<HHH",
-                0x206E,
-                m_idx[("Landroid/content/Context;", "startActivity")],
-                0x0004,
-            ),
-            struct.pack("<H", 0x000E),
-        ]
-    )
-    data += (
-        struct.pack("<HHHHII", 6, 3, 3, 0, 0, len(insns_onrec) // 2) + insns_onrec
-    )
+    code_boot_onrec_off = data_off + len(data)
+    insns_onrec = b"".join([
+        # 0: if-eqz v11, :ret (+57)
+        struct.pack("<HH", (11 << 8) | 0x38, 57),
+        # 2: invoke-virtual {v11}, Intent.getAction
+        struct.pack("<HHH", 0x106E, m_idx[("Landroid/content/Intent;", "getAction", ())], 0x000B),
+        # 5: move-result-object v0
+        struct.pack("<H", (0 << 8) | 0x0C),
+        # 6: if-eqz v0, :ret (+51)
+        struct.pack("<HH", (0 << 8) | 0x38, 51),
+        # 8: const-string v1, "android.intent.action.BOOT_COMPLETED"
+        struct.pack("<HH", (1 << 8) | 0x1A, s_idx["android.intent.action.BOOT_COMPLETED"]),
+        # 10: invoke-virtual {v1, v0}, String.equals:(Object)Z
+        struct.pack("<HHH", 0x206E, m_idx[("Ljava/lang/String;", "equals", ("Ljava/lang/Object;",))], 0x0001),
+        # 13: move-result v0
+        struct.pack("<H", (0 << 8) | 0x0A),
+        # 14: if-eqz v0, :ret (+43)
+        struct.pack("<HH", (0 << 8) | 0x38, 43),
 
+        # Target Intent setup
+        # 16: new-instance v0, Intent
+        struct.pack("<HH", (0 << 8) | 0x22, t_idx["Landroid/content/Intent;"]),
+        # 18: invoke-direct {v0}, Intent.<init>()
+        struct.pack("<HHH", 0x1070, m_idx[("Landroid/content/Intent;", "<init>", ())], 0x0000),
+        # 21: const-string v1, target_pkg
+        struct.pack("<HH", (1 << 8) | 0x1A, s_idx[target_pkg]),
+        # 23: const-string v2, target_cls
+        struct.pack("<HH", (2 << 8) | 0x1A, s_idx[target_cls]),
+        # 25: invoke-virtual {v0, v1, v2}, Intent.setClassName
+        struct.pack("<HHH", 0x306E, m_idx[("Landroid/content/Intent;", "setClassName", ("Ljava/lang/String;", "Ljava/lang/String;"))], 0x0210),
+        # 28: const/high16 v1, 0x10000000 (FLAG_ACTIVITY_NEW_TASK)
+        struct.pack("<HH", (1 << 8) | 0x15, 0x1000),
+        # 30: invoke-virtual {v0, v1}, Intent.addFlags
+        struct.pack("<HHH", 0x206E, m_idx[("Landroid/content/Intent;", "addFlags", ("I",))], 0x0010),
+
+        # PendingIntent.getActivity(context, 0, target, 0x10000000)
+        # 33: const/4 v1, 0
+        struct.pack("<H", (0 << 12) | (1 << 8) | 0x12),
+        # 34: const/high16 v2, 0x10000000 (FLAG_CANCEL_CURRENT)
+        struct.pack("<HH", (2 << 8) | 0x15, 0x1000),
+        # 36: invoke-static {v10, v1, v0, v2}, PendingIntent.getActivity
+        struct.pack("<HHH", 0x4071, m_idx[("Landroid/app/PendingIntent;", "getActivity", ("Landroid/content/Context;", "I", "Landroid/content/Intent;", "I"))], 0x201A),
+        # 39: move-result-object v3
+        struct.pack("<H", (3 << 8) | 0x0C),
+
+        # AlarmManager am = (AlarmManager) context.getSystemService("alarm")
+        # 40: const-string v1, "alarm"
+        struct.pack("<HH", (1 << 8) | 0x1A, s_idx["alarm"]),
+        # 42: invoke-virtual {v10, v1}, Context.getSystemService
+        struct.pack("<HHH", 0x206E, m_idx[("Landroid/content/Context;", "getSystemService", ("Ljava/lang/String;",))], 0x001A),
+        # 45: move-result-object v4
+        struct.pack("<H", (4 << 8) | 0x0C),
+
+        # long now = SystemClock.elapsedRealtime()
+        # 46: invoke-static {}, SystemClock.elapsedRealtime
+        struct.pack("<HHH", 0x0071, m_idx[("Landroid/os/SystemClock;", "elapsedRealtime", ())], 0x0000),
+        # 49: move-result-wide v5
+        struct.pack("<H", (5 << 8) | 0x0B),
+
+        # long trigger = now + delay_ms
+        # 50: const-wide/16 v7, delay_ms
+        struct.pack("<HH", (7 << 8) | 0x16, delay_ms),
+        # 52: add-long v5, v5, v7
+        struct.pack("<HH", (5 << 8) | 0x9B, (7 << 8) | 5),
+
+        # am.setExact(2, trigger, pi)
+        # 54: const/4 v1, 2 (ELAPSED_REALTIME_WAKEUP)
+        struct.pack("<H", (2 << 12) | (1 << 8) | 0x12),
+        # 55: invoke-virtual {v4, v1, v5, v6, v3}, AlarmManager.setExact
+        struct.pack("<HHH", (5 << 12) | (3 << 8) | 0x6E, m_idx[("Landroid/app/AlarmManager;", "setExact", ("I", "J", "Landroid/app/PendingIntent;"))], (6 << 12) | (5 << 8) | (1 << 4) | 4),
+
+        # 58: :ret return-void
+        struct.pack("<H", 0x000E),
+    ])
+    code_units = len(insns_onrec) // 2
+    data += struct.pack("<HHHHII", 12, 3, 5, 0, 0, code_units) + insns_onrec
+
+    if is_test:
+        # Method 3: TestActivity.<init>
+        align4()
+        code_act_init_off = data_off + len(data)
+        insns_act_init = struct.pack(
+            "<HHHH",
+            0x1070,
+            m_idx[("Landroid/app/Activity;", "<init>", ())],
+            0x0000,
+            0x000E,
+        )
+        data += struct.pack("<HHHHII", 1, 1, 1, 0, 0, len(insns_act_init) // 2) + insns_act_init
+
+        # Method 4: TestActivity.onCreate
+        align4()
+        code_act_oncreate_off = data_off + len(data)
+        insns_act_oncreate = b"".join([
+            # invoke-super {p0, p1}, Activity.onCreate
+            struct.pack("<HHH", 0x206F, m_idx[("Landroid/app/Activity;", "onCreate", ("Landroid/os/Bundle;",))], 0x0010),
+            # invoke-virtual {p0}, Activity.finish
+            struct.pack("<HHH", 0x106E, m_idx[("Landroid/app/Activity;", "finish", ())], 0x0000),
+            # return-void
+            struct.pack("<H", 0x000E),
+        ])
+        data += struct.pack("<HHHHII", 2, 2, 2, 0, 0, len(insns_act_oncreate) // 2) + insns_act_oncreate
+
+    # String data pool
     str_data_offs = []
     for s in strs:
         str_data_offs.append(data_off + len(data))
         b = s.encode("utf-8")
         data += uleb128(len(s)) + b + b"\x00"
 
-    class_data_off = data_off + len(data)
-    m_init = m_idx[("Lcom/autostart/factoryhelper/BootReceiver;", "<init>")]
-    m_onrec = m_idx[("Lcom/autostart/factoryhelper/BootReceiver;", "onReceive")]
+    # Class data 1: BootReceiver
+    class_data_boot_off = data_off + len(data)
+    m_boot_init = m_idx[(f"L{pkg_name.replace('.', '/')}/BootReceiver;", "<init>", ())]
+    m_boot_onrec = m_idx[(f"L{pkg_name.replace('.', '/')}/BootReceiver;", "onReceive", ("Landroid/content/Context;", "Landroid/content/Intent;"))]
     data += (
-        uleb128(0)
-        + uleb128(0)
-        + uleb128(1)
-        + uleb128(1)
-        + uleb128(m_init)
-        + uleb128(0x10001)
-        + uleb128(code_init_off)
-        + uleb128(m_onrec)
-        + uleb128(0x0001)
-        + uleb128(code_onrec_off)
+        uleb128(0)  # static_fields_size
+        + uleb128(0)  # instance_fields_size
+        + uleb128(1)  # direct_methods_size (<init>)
+        + uleb128(1)  # virtual_methods_size (onReceive)
+        + uleb128(m_boot_init)
+        + uleb128(0x10001)  # ACC_PUBLIC | ACC_CONSTRUCTOR
+        + uleb128(code_boot_init_off)
+        + uleb128(m_boot_onrec)
+        + uleb128(0x0001)  # ACC_PUBLIC
+        + uleb128(code_boot_onrec_off)
     )
+
+    if is_test:
+        # Class data 2: TestActivity
+        class_data_act_off = data_off + len(data)
+        m_act_init = m_idx[(f"L{pkg_name.replace('.', '/')}/TestActivity;", "<init>", ())]
+        m_act_oncreate = m_idx[(f"L{pkg_name.replace('.', '/')}/TestActivity;", "onCreate", ("Landroid/os/Bundle;",))]
+        data += (
+            uleb128(0)  # static_fields_size
+            + uleb128(0)  # instance_fields_size
+            + uleb128(1)  # direct_methods_size (<init>)
+            + uleb128(1)  # virtual_methods_size (onCreate)
+            + uleb128(m_act_init)
+            + uleb128(0x10001)  # ACC_PUBLIC | ACC_CONSTRUCTOR
+            + uleb128(code_act_init_off)
+            + uleb128(m_act_oncreate)
+            + uleb128(0x0004)  # ACC_PROTECTED
+            + uleb128(code_act_oncreate_off)
+        )
 
     align4()
     map_off = data_off + len(data)
@@ -395,15 +547,11 @@ def make_dex() -> bytes:
         (0x0002, len(type_strs), type_ids_off),
         (0x0003, len(proto_defs), proto_ids_off),
         (0x0005, len(method_defs), method_ids_off),
-        (0x0006, 1, class_defs_off),
-        (
-            0x1001,
-            sum(1 for v in typelist_offs.values() if v != 0),
-            min(v for v in typelist_offs.values() if v != 0),
-        ),
-        (0x2001, 2, code_init_off),
+        (0x0006, num_classes, class_defs_off),
+        (0x1001, sum(1 for v in typelist_offs.values() if v != 0), min(v for v in typelist_offs.values() if v != 0)),
+        (0x2001, 4 if is_test else 2, code_boot_init_off),
         (0x2002, len(strs), str_data_offs[0]),
-        (0x2000, 1, class_data_off),
+        (0x2000, num_classes, class_data_boot_off),
         (0x1000, 1, map_off),
     ]
     data += struct.pack("<I", len(map_items))
@@ -416,26 +564,37 @@ def make_dex() -> bytes:
     str_ids_bin = b"".join(struct.pack("<I", o) for o in str_data_offs)
     type_ids_bin = b"".join(struct.pack("<I", s_idx[s]) for s in type_strs)
     proto_ids_bin = b"".join(
-        struct.pack(
-            "<III", s_idx[shorty], t_idx[ret], typelist_offs[(ret, tuple(params))]
-        )
+        struct.pack("<III", s_idx[shorty], t_idx[ret], typelist_offs[(ret, tuple(params))])
         for shorty, ret, params in proto_defs
     )
     method_ids_bin = b"".join(
-        struct.pack("<HHI", t_idx[c], p_idx[(r, p)], s_idx[n])
+        struct.pack("<HHI", t_idx[c], p_idx[(r, tuple(p))], s_idx[n])
         for c, r, p, n in method_defs
     )
+
     class_defs_bin = struct.pack(
         "<IIIIIIII",
-        t_idx["Lcom/autostart/factoryhelper/BootReceiver;"],
-        0x0001,
+        t_idx[f"L{pkg_name.replace('.', '/')}/BootReceiver;"],
+        0x0001,  # ACC_PUBLIC
         t_idx["Landroid/content/BroadcastReceiver;"],
         0,
         0xFFFFFFFF,
         0,
-        class_data_off,
+        class_data_boot_off,
         0,
     )
+    if is_test:
+        class_defs_bin += struct.pack(
+            "<IIIIIIII",
+            t_idx[f"L{pkg_name.replace('.', '/')}/TestActivity;"],
+            0x0001,  # ACC_PUBLIC
+            t_idx["Landroid/app/Activity;"],
+            0,
+            0xFFFFFFFF,
+            0,
+            class_data_act_off,
+            0,
+        )
 
     body_after_sig = (
         struct.pack("<II", file_size, 0x70)
@@ -447,7 +606,7 @@ def make_dex() -> bytes:
         + struct.pack("<II", len(proto_defs), proto_ids_off)
         + struct.pack("<II", 0, 0)
         + struct.pack("<II", len(method_defs), method_ids_off)
-        + struct.pack("<II", 1, class_defs_off)
+        + struct.pack("<II", num_classes, class_defs_off)
         + struct.pack("<II", len(data), data_off)
         + str_ids_bin
         + type_ids_bin
@@ -461,11 +620,17 @@ def make_dex() -> bytes:
     return b"dex\n035\x00" + struct.pack("<I", adler) + sha1 + body_after_sig
 
 
-def build_signed_apk(out_path: pathlib.Path, key_path: pathlib.Path):
-    axml = make_axml()
-    dex = make_dex()
+def build_signed_apk(
+    out_path: pathlib.Path,
+    key_path: pathlib.Path,
+    pkg_name: str = "com.autostart.factoryhelper",
+    is_test: bool = False,
+    delay_ms: int = 5000,
+    exported: bool = False,
+):
+    axml = make_axml(pkg_name=pkg_name, is_test=is_test, exported=exported)
+    dex = make_dex(pkg_name=pkg_name, is_test=is_test, delay_ms=delay_ms)
 
-    # Never silently rotate the signing identity during a rebuild.
     key = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
     if not isinstance(key, rsa.RSAPrivateKey):
         raise ValueError("An RSA private key is required")
@@ -521,6 +686,7 @@ def build_signed_apk(out_path: pathlib.Path, key_path: pathlib.Path):
         )
     )
 
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("AndroidManifest.xml", axml)
         z.writestr("classes.dex", dex)
@@ -530,10 +696,14 @@ def build_signed_apk(out_path: pathlib.Path, key_path: pathlib.Path):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Build with a persistent, locally stored signing key")
-    parser.add_argument("--key", type=pathlib.Path, required=True)
+    parser = argparse.ArgumentParser(description="Zero-SDK Python generator for AutoStartHelper APK")
+    parser.add_argument("--key", type=pathlib.Path, required=True, help="Path to RSA private key")
     parser.add_argument("--init-key", action="store_true", help="Create a NEW key; never overwrite an existing one")
-    parser.add_argument("--output", type=pathlib.Path, default=pathlib.Path(__file__).resolve().parent.parent / "configs" / "AutoStartHelper.apk")
+    parser.add_argument("--output", type=pathlib.Path, default=None, help="Output APK path")
+    parser.add_argument("--test-mode", action="store_true", help="Build independent test APK (com.autostart.factoryhelper.test)")
+    parser.add_argument("--delay-ms", type=int, default=5000, help="Delay before firing target Intent in milliseconds")
+    parser.add_argument("--exported", action="store_true", default=False, help="Set receiver exported (default: False)")
+
     args = parser.parse_args()
     if args.init_key:
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -542,5 +712,21 @@ if __name__ == "__main__":
         args.key.chmod(0o600)
     if not args.key.is_file():
         parser.error("Key not found. Use --init-key once, then reuse the same --key.")
-    build_signed_apk(args.output, args.key)
-    print(f"[+] Built signed APK: {args.output}")
+
+    repo_configs = pathlib.Path(__file__).resolve().parent.parent / "configs"
+    if args.output is None:
+        if args.test_mode:
+            args.output = repo_configs / "AutoStartHelper_test.apk"
+        else:
+            args.output = repo_configs / "AutoStartHelper.apk"
+
+    pkg_name = "com.autostart.factoryhelper.test" if args.test_mode else "com.autostart.factoryhelper"
+    build_signed_apk(
+        args.output,
+        args.key,
+        pkg_name=pkg_name,
+        is_test=args.test_mode,
+        delay_ms=args.delay_ms,
+        exported=args.exported,
+    )
+    print(f"[+] Built signed APK ({'TEST' if args.test_mode else 'PROD'}): {args.output} (pkg: {pkg_name})")

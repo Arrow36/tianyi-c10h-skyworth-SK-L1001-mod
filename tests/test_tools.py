@@ -33,6 +33,52 @@ def elf_fixture():
     return bytes(raw)
 
 
+def parse_axml_elements(axml_data: bytes):
+    """Minimal AXML parser for test assertions on generated manifests."""
+    offset = 0
+    root_type, root_hdr_size, _ = struct.unpack_from("<HHI", axml_data, offset)
+    assert root_type == 0x0003, f"Expected 0x0003, got {hex(root_type)}"
+    offset += root_hdr_size
+
+    strings = []
+    elements = []
+
+    while offset < len(axml_data):
+        chunk_type, _, chunk_size = struct.unpack_from("<HHI", axml_data, offset)
+        if chunk_type == 0x0001:  # STRING_POOL
+            str_count = struct.unpack_from("<I", axml_data, offset + 8)[0]
+            str_start = struct.unpack_from("<I", axml_data, offset + 20)[0] + offset
+            str_offsets = [struct.unpack_from("<I", axml_data, offset + 28 + i * 4)[0] for i in range(str_count)]
+            for o in str_offsets:
+                s_ptr = str_start + o
+                s_len = struct.unpack_from("<H", axml_data, s_ptr)[0]
+                s_bytes = axml_data[s_ptr + 2: s_ptr + 2 + s_len * 2]
+                strings.append(s_bytes.decode("utf-16le"))
+        elif chunk_type == 0x0102:  # START_ELEMENT
+            name_idx = struct.unpack_from("<I", axml_data, offset + 20)[0]
+            tag_name = strings[name_idx]
+            attr_count = struct.unpack_from("<H", axml_data, offset + 28)[0]
+            attrs = {}
+            attr_offset = offset + 36
+            for _ in range(attr_count):
+                _, a_name_idx, a_val_str_idx, _, _, a_type, a_data = struct.unpack_from("<IIIHBBI", axml_data, attr_offset)
+                a_name = strings[a_name_idx]
+                if a_val_str_idx != 0xFFFFFFFF:
+                    a_val = strings[a_val_str_idx]
+                elif a_type == 0x12:  # BOOL
+                    a_val = bool(a_data != 0)
+                elif a_type == 0x10:  # INT
+                    a_val = int(a_data)
+                else:
+                    a_val = a_data
+                attrs[a_name] = a_val
+                attr_offset += 20
+            elements.append((tag_name, attrs))
+        offset += chunk_size
+
+    return strings, elements
+
+
 class ToolTests(unittest.TestCase):
     def test_published_config_roundtrip_and_xml(self):
         plain = (ROOT / 'configs/factorytest_config_plain.xml').read_bytes()
@@ -145,6 +191,56 @@ class ToolTests(unittest.TestCase):
         self.assertIn('Refusing to blindly enable all packages', restore_sh)
         self.assertIn('FAILED_COUNT', restore_sh, "restore_bloatware.sh must check pm enable exit status")
         self.assertIn('pm default-state', restore_sh, "restore_bloatware.sh should restore default-state for fidelity")
+
+    def test_autostart_apk_production_and_test_isolation(self):
+        prod_apk = ROOT / 'configs/AutoStartHelper.apk'
+        self.assertTrue(prod_apk.exists(), "Production AutoStartHelper.apk must exist")
+        with zipfile.ZipFile(prod_apk) as z:
+            axml = z.read('AndroidManifest.xml')
+            dex = z.read('classes.dex')
+            _, elems = parse_axml_elements(axml)
+            manifest = next(attrs for tag, attrs in elems if tag == 'manifest')
+            self.assertEqual(manifest['package'], 'com.autostart.factoryhelper', "Prod package must be com.autostart.factoryhelper")
+            self.assertIn(b'com.yeker.factorytest.tool', dex)
+
+        # Build test APK into temp dir
+        with tempfile.TemporaryDirectory() as tmp:
+            test_apk_out = Path(tmp) / 'AutoStartHelper_test.apk'
+            cmd = [
+                sys.executable,
+                str(ROOT / 'scripts/build_autostart_apk.py'),
+                '--key', str(ROOT / 'scripts/debug.key'),
+                '--output', str(test_apk_out),
+                '--test-mode',
+            ]
+            res = subprocess.run(cmd, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0, f"build_autostart_apk failed: {res.stderr}")
+            self.assertTrue(test_apk_out.exists())
+
+            with zipfile.ZipFile(test_apk_out) as z:
+                t_axml = z.read('AndroidManifest.xml')
+                t_dex = z.read('classes.dex')
+                _, t_elems = parse_axml_elements(t_axml)
+
+                t_manifest = next(attrs for tag, attrs in t_elems if tag == 'manifest')
+                self.assertEqual(t_manifest['package'], 'com.autostart.factoryhelper.test')
+
+                t_receiver = next(attrs for tag, attrs in t_elems if tag == 'receiver')
+                self.assertFalse(t_receiver['exported'], "Test receiver must declare exported=false")
+
+                # TestActivity must be registered in test mode
+                act_elem = next((attrs for tag, attrs in t_elems if tag == 'activity'), None)
+                self.assertIsNotNone(act_elem, "TestActivity must be declared in test manifest")
+                self.assertEqual(act_elem['name'], 'com.autostart.factoryhelper.test.TestActivity')
+
+                # DEX checks: Must use non-blocking AlarmManager and check getAction
+                self.assertIn(b'AlarmManager', t_dex)
+                self.assertIn(b'PendingIntent', t_dex)
+                self.assertIn(b'SystemClock', t_dex)
+                self.assertIn(b'getAction', t_dex)
+                self.assertNotIn(b'sleep', t_dex, "Test DEX must not contain Thread.sleep blocking call")
+                self.assertNotIn(b'com.yeker.factorytest.tool', t_dex, "Test DEX must NOT target real FactoryTest tool")
+                self.assertIn(b'com.autostart.factoryhelper.test.TestActivity', t_dex)
 
     def test_enable_keys_verifies_root_uid(self):
         cmd_content = (ROOT / 'scripts/key_remap/enable_keys.cmd').read_text(encoding='utf-8')
