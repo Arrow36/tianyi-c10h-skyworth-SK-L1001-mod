@@ -32,8 +32,8 @@
 2. **微型原生事件监听器 (`gpio_event_reader`)**：
    - 采用纯汇编编写的极简 ARM 二进制（体积仅 456 字节，源码见 `gpio_event_reader.S`）。
    - 直接监听 `/dev/input/event*` 的 Linux `input_event` 结构体，精确计算按键按下到松开的微秒级时间差，输出 `PRESS / RELEASE / DURATION` 事件流。
-3. **事件分流脚本 (`toggle.sh` & `adc_toggle.sh`)**：
-   - 管道接收事件持续时间并判定时长，通过 `input` 或 `am` 执行对应操作。
+3. **即时非阻塞长按分流 (`toggle.sh` & `adc_toggle.sh`)**：
+   - 管道监听按下与松开事件。按住达到 **0.5 秒**（标准 Android `ViewConfiguration` 长按阈值）时**原地立刻触发长按动作**（无需等待手指松开即可看到菜单/主页弹出）；松手时自动清理状态且不误发短按，保证快速轻点返回与按住即长按的双重极致手感。基于 `/dev` 纯内存 tmpfs 状态标记与递增序列号机制，彻底杜绝快速连击下的误触竞争。
 4. **系统级 Home 键崩溃与当贝桌面自杀式重载双重根治**：
    - **底层 Framework 崩溃修复**：原厂固件在 `/system/build.prop` 中写死了 `epg.launcher.packagename=com.tatv.android.TMC`。在精简冻结 TMC 后，原生框架 `PhoneWindowManager.startDockOrHome()` 调用 `pm.getLaunchIntentForPackage()` 返回 `null`，随后的 `intent.putExtra("GoHome", "true")` 导致未捕获异常崩溃中断按键派发。`activate.sh` 启动时自动纠偏指向当贝桌面：
      ```sh

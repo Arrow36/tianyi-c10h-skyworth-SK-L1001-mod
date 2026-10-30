@@ -2,6 +2,12 @@
 BASE=/data/local/codex-screen-toggle
 echo $$ > "$BASE/adc.pid"
 trap 'exit 0' TERM INT
+
+HOLD_SEC=0.5
+F10_SEQ=0
+
+rm -f /dev/c10h_f10.*
+
 while true; do
   DEVICE=
   for NAMEFILE in /sys/class/input/event*/device/name; do
@@ -11,23 +17,31 @@ while true; do
     break
   done
   if [ -z "$DEVICE" ]; then sleep 2; continue; fi
+
   "$BASE/gpio_event_reader" "$DEVICE" | while read SEC USEC TYPECODE VALUE; do
     case "$TYPECODE:$VALUE" in
       00440001:00000001)
-        DOWN_US=$((0x$SEC * 1000000 + 0x$USEC))
+        # F10 Down (Button 2 / Microphone: Confirm / Recents)
+        F10_SEQ=$((F10_SEQ + 1))
+        CUR_SEQ=$F10_SEQ
+        echo "$CUR_SEQ" > /dev/c10h_f10.down
+        (
+          sleep $HOLD_SEC
+          if [ "x$(cat /dev/c10h_f10.down 2>/dev/null)" = "x$CUR_SEQ" ]; then
+            touch /dev/c10h_f10.long
+            am start -a com.android.systemui.recents.TOGGLE_RECENTS -n com.android.systemui/.recents.RecentsActivity > /dev/null
+            echo "$(date '+%F %T') F10 -> long-press (RECENTS) triggered" >> "$BASE/events.log"
+          fi
+        ) &
         ;;
       00440001:00000000)
-        if [ -n "$DOWN_US" ]; then
-          DURATION_US=$((0x$SEC * 1000000 + 0x$USEC - DOWN_US))
-          DOWN_US=
-          if [ "$DURATION_US" -ge 600000 ]; then
-            am start -a com.android.systemui.recents.TOGGLE_RECENTS -n com.android.systemui/.recents.RecentsActivity > /dev/null
-            ACTION=RECENTS
-          else
-            input keyevent 23
-            ACTION=CONFIRM
-          fi
-          echo "$(date '+%F %T') F10 -> $ACTION duration_us=$DURATION_US" >> "$BASE/events.log"
+        # F10 Up
+        rm -f /dev/c10h_f10.down
+        if [ -f /dev/c10h_f10.long ]; then
+          rm -f /dev/c10h_f10.long
+        else
+          input keyevent 23
+          echo "$(date '+%F %T') F10 -> short-press (CONFIRM)" >> "$BASE/events.log"
         fi
         ;;
     esac
