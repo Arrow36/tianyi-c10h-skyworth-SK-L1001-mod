@@ -12,6 +12,7 @@ temp*
 /data/
 /backups/
 .c10h-backups/
+configs/backup_*/
 
 # OS / Editor files
 .DS_Store

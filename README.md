@@ -154,9 +154,10 @@ adb shell "pm disable-user --user 0 com.haobai.sipphone"         # 号百固话V
    adb shell "pm disable com.yeker.factorytest.tool/com.yeker.factorytest.tool.broadcastReceiver.AppBroadcastReceiver"
    ```
 3. **开机静默自动触发守护（AutoStartHelper.apk）**：
-   为了让机器每次开机都不需要手动点击图标，我们编写了纯 Python 工具 `scripts/build_autostart_apk.py`，无需 Android SDK 即可自动生成带 V1 签名的轻量自启应用 `AutoStartHelper.apk`（仅 ~2KB）。
-   - 该助手监听系统 `BOOT_COMPLETED` 广播；
-   - 内部增加了 **5 秒延时**（避免系统刚开机时当贝桌面初始化抢焦点导致工厂工具被切至后台）；
+   为了让机器每次开机都不需要手动点击图标，我们编写了纯 Python 工具 `scripts/build_autostart_apk.py`，无需 Android SDK 即可自动生成带 V1 签名的轻量自启应用 `AutoStartHelper.apk`（仅 ~3KB）。
+   - 该助手监听系统 `BOOT_COMPLETED` 广播（`exported=false`，原生适配 Android 9 安全广播机制）；
+   - 采用系统级 `AlarmManager` 精确非阻塞延迟（约 5 秒），彻底告别 `Thread.sleep` 阻塞广播主线程的潜在风险，避免开机高负载时广播超时 ANR；
+   - 目标 SDK 声明为 Android 9 (`targetSdkVersion=28`)，不会触发“专为旧版安卓打造”系统弹窗；
    - 延时后静默拉起 `FactoryTestTool`，触发其执行命令开启 Root ADB 并立即自我终止（`force-stop`），全过程屏幕仅闪烁约 1 秒，无缝返回当贝桌面。
 
 ---

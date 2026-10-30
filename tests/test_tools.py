@@ -202,6 +202,13 @@ class ToolTests(unittest.TestCase):
             manifest = next(attrs for tag, attrs in elems if tag == 'manifest')
             self.assertEqual(manifest['package'], 'com.autostart.factoryhelper', "Prod package must be com.autostart.factoryhelper")
             self.assertIn(b'com.yeker.factorytest.tool', dex)
+            self.assertIn(b'AlarmManager', dex, "Prod DEX must use AlarmManager")
+            self.assertIn(b'PendingIntent', dex)
+            self.assertIn(b'SystemClock', dex)
+            self.assertNotIn(b'sleep', dex, "Prod DEX must not contain Thread.sleep")
+            self.assertNotIn(b'TestActivity', dex, "Prod DEX must not contain TestActivity")
+            receiver = next(attrs for tag, attrs in elems if tag == 'receiver')
+            self.assertFalse(receiver['exported'], "Prod receiver must be exported=false")
 
         # Build test APK into temp dir
         with tempfile.TemporaryDirectory() as tmp:
