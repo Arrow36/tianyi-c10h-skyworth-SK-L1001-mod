@@ -14,6 +14,10 @@ setprop epg.launcher.packagename com.dangbei.tvlauncher
 setprop sys.deflauncher.pkg com.dangbei.tvlauncher
 setprop sys.deflauncher.cls com.dangbei.launcher.ui.main.MainActivity
 
+# Disable Dangbei Launcher self-relaunch hook on CLOSE_SYSTEM_DIALOGS,
+# which unnecessarily evicts desktop icons and re-inflates views causing wallpaper stall.
+pm disable com.dangbei.tvlauncher/com.dangbei.launcher.service.HomeKeyEventCatchService 2>/dev/null
+
 if [ -f "$BASE/runtime.pid" ]; then
   OLD_PID=$(cat "$BASE/runtime.pid")
   case "$(tr '\000' ' ' < /proc/$OLD_PID/cmdline 2>/dev/null)" in

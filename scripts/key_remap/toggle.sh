@@ -43,7 +43,7 @@ while true; do
           DURATION_US=$((0x$SEC * 1000000 + 0x$USEC - F9_DOWN_US))
           F9_DOWN_US=
           if [ "$DURATION_US" -ge 600000 ]; then
-            am start -n com.dangbei.tvlauncher/com.dangbei.launcher.ui.main.MainActivity || input keyevent 3
+            am start -a android.intent.action.MAIN -c android.intent.category.HOME || input keyevent 3
             ACTION=HOME
           else
             input keyevent 4

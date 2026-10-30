@@ -50,5 +50,9 @@ for pkg in $PACKAGES; do
     am force-stop "$pkg" 2>/dev/null
 done
 
+# Optimize Dangbei Launcher: disable internal HomeKeyEventCatchService self-restart hook
+# which unnecessarily purges icon cache and reloads desktop on CLOSE_SYSTEM_DIALOGS
+pm disable com.dangbei.tvlauncher/com.dangbei.launcher.service.HomeKeyEventCatchService 2>/dev/null
+
 echo "=== Memory After Debloat ==="
 free -m
