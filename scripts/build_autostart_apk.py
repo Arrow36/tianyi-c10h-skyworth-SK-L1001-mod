@@ -9,6 +9,7 @@ Wireless Root ADB and auto-close.
 Dependency: pip install cryptography
 """
 
+import argparse
 import struct
 import hashlib
 import zlib
@@ -460,11 +461,14 @@ def make_dex() -> bytes:
     return b"dex\n035\x00" + struct.pack("<I", adler) + sha1 + body_after_sig
 
 
-def build_signed_apk(out_path: pathlib.Path):
+def build_signed_apk(out_path: pathlib.Path, key_path: pathlib.Path):
     axml = make_axml()
     dex = make_dex()
 
-    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    # Never silently rotate the signing identity during a rebuild.
+    key = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
+    if not isinstance(key, rsa.RSAPrivateKey):
+        raise ValueError("An RSA private key is required")
     subject = issuer = x509.Name(
         [x509.NameAttribute(NameOID.COMMON_NAME, "Android Debug")]
     )
@@ -526,6 +530,17 @@ def build_signed_apk(out_path: pathlib.Path):
 
 
 if __name__ == "__main__":
-    out = pathlib.Path(__file__).resolve().parent.parent / "configs" / "AutoStartHelper.apk"
-    build_signed_apk(out)
-    print(f"[+] Built signed APK: {out}")
+    parser = argparse.ArgumentParser(description="Build with a persistent, locally stored signing key")
+    parser.add_argument("--key", type=pathlib.Path, required=True)
+    parser.add_argument("--init-key", action="store_true", help="Create a NEW key; never overwrite an existing one")
+    parser.add_argument("--output", type=pathlib.Path, default=pathlib.Path(__file__).resolve().parent.parent / "configs" / "AutoStartHelper.apk")
+    args = parser.parse_args()
+    if args.init_key:
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        with args.key.open("xb") as stream:
+            stream.write(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+        args.key.chmod(0o600)
+    if not args.key.is_file():
+        parser.error("Key not found. Use --init-key once, then reuse the same --key.")
+    build_signed_apk(args.output, args.key)
+    print(f"[+] Built signed APK: {args.output}")

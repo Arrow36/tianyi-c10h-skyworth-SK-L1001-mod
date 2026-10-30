@@ -192,16 +192,32 @@ I tv.danmaku.bil: Rejecting re-init on previously-failed class: java.lang.Unsati
 
 Android 9 的 `Zygote` 进程在系统初始化阶段，预先在全局命名空间中加载了老旧的 `/system/lib/libcrypto.so` 和 `/system/lib/libssl.so`。新版 B 站自身虽然携带了支持现代加密算法（包含 HPKE 接口）的私有 BoringSSL 动态库，但因文件名完全同名，Linux 动态链接器（linker）优先匹配到了系统全局的旧库，导致符号缺失崩溃。
 
-### 3. 热补丁方案
+### 3. 热补丁方案（支持直接安全热修与本地精密 ELF 校验两种模式）
 
 我们无需重编译 APK，直接对设备中的 ELF 二进制文件执行原位字符替换（保持字符串长度完全相等以避免破坏 ELF 节头偏移）：
 - `libcrypto.so` (12 字符) $\rightarrow$ `libbili_o.so` (12 字符)
 - `libssl.so` (9 字符) $\rightarrow$ `libbsl.so` (9 字符)
 
-直接执行提供的修复脚本：
+#### 模式 A：真机一键执行（自带快照备份与一键还原）
+直接执行升级后的热补丁脚本，脚本会自动对原始动态库做快照备份并安全加固：
 ```sh
 adb push scripts/fix_bilibili_ssl.sh /data/local/tmp/
 adb shell "sh /data/local/tmp/fix_bilibili_ssl.sh"
+```
+如需回滚还原，只需运行输出提示的还原命令：
+```sh
+adb shell "sh /data/local/tmp/fix_bilibili_ssl.sh restore <BACKUP_DIR>"
+```
+
+#### 模式 B：宿主机精密解析补丁（针对 ELF32 动态节严格校验）
+若要在电脑端针对 B 站提取库进行符号表精确重构，可使用配套工具：
+```sh
+# 1. 宿主机精密解析 PT_DYNAMIC 段、仅改写 DT_STRTAB 并生成 SHA256 校验清单
+python scripts/prepare_bilibili_ssl.py <extracted_libs_dir> <output_patched_dir>
+
+# 2. 推送至设备并通过清单安全应用
+adb push scripts/fix_bilibili_ssl.sh <output_patched_dir> /data/local/tmp/
+adb shell "sh /data/local/tmp/fix_bilibili_ssl.sh apply /data/local/tmp/<output_patched_dir>"
 ```
 修改后，B 站动态库精准绑定私有副本，新版客户端完美运行，视频播放与弹幕一切正常！
 
@@ -287,18 +303,22 @@ adb forward tcp:9222 localabstract:webview_devtools_remote_<PID>
 │   ├── key_remap/                  # 机身实体按键长短按映射与电源控制工具包
 │   │   ├── README.md               # 按键映射技术原理与配置说明
 │   │   ├── enable_keys.cmd         # Windows 一键推送与激活批处理
-│   │   ├── activate.sh             # GPIO 按键与总控激活脚本
+│   │   ├── activate.sh             # GPIO 按键与总控激活脚本（含 ATVTools 联动）
 │   │   ├── activate_adc.sh         # ADC 按键 (F10) 激活脚本
 │   │   ├── toggle.sh               # GPIO 键行为分流 (电源/返回/主页)
 │   │   ├── adc_toggle.sh           # ADC 键行为分流 (确认/最近任务)
 │   │   ├── gpio_event_reader       # 456 字节极简事件解析二进制 (ARM)
 │   │   ├── gpio_event_reader.S     # 汇编源码
 │   │   └── *.idc / *.kl            # 输入设备属性与布局映射配置
-│   ├── build_autostart_apk.py      # 纯 Python 生成 AutoStartHelper.apk 的构建脚本
+│   ├── build_autostart_apk.py      # 纯 Python 生成 AutoStartHelper.apk（支持固定持久私钥）
 │   ├── debloat.sh                  # 一键冻结 36 个电信/OTA/教育后台的优化脚本
-│   ├── factorytest_crypt.py        # factorytest_config.xml 异或加解密工具
-│   ├── fix_bilibili_ssl.sh         # 修复 B 站 BoringSSL 动态库冲突的热补丁脚本
+│   ├── debloat-packages.txt        # 解耦维护的预装冻结包名清单
+│   ├── factorytest_crypt.py        # factorytest_config.xml 异或加解密与 XML 合法性校验工具
+│   ├── fix_bilibili_ssl.sh         # 修复 B 站 BoringSSL 动态库冲突的热补丁脚本（支持备份与回滚）
+│   ├── prepare_bilibili_ssl.py     # 宿主机 ELF32 PT_DYNAMIC 精密改写与清单生成器
 │   └── restore_bloatware.sh        # 一键恢复所有被冻结组件的还原脚本
+├── tests/
+│   └── test_tools.py               # 自动化回归测试（XML 语法、XOR 还原性、ELF 内存补丁）
 ├── skills/
 │   └── skyworth-c10h-modding/
 │       └── SKILL.md                # 适用于 AI 编程助手的操作指南与自动化 Skill 定义

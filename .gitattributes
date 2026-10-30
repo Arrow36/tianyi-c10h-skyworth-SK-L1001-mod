@@ -1,0 +1,7 @@
+*.sh text eol=lf
+*.py text eol=lf
+*.cmd text eol=crlf
+configs/factorytest_config.xml binary
+*.md text eol=lf
+configs/factorytest_config_plain.xml text eol=lf
+*.txt text eol=lf

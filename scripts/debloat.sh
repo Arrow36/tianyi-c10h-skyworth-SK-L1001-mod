@@ -3,7 +3,11 @@
 # Freeze 36 China Telecom / Haobai / Skyworth OTA / Education bloatware packages on C10H (SK-L1001)
 # Frees ~555MB of RAM and blocks silent remote OTA updates & boot popups.
 
-PACKAGES="
+SCRIPT_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
+if [ -f "$SCRIPT_DIR/debloat-packages.txt" ]; then
+    PACKAGES=$(grep -v '^#' "$SCRIPT_DIR/debloat-packages.txt")
+else
+    PACKAGES="
 com.chinatelecom.accloudbox
 com.haobai.sipphone
 com.skyworthdigital.upgrade
@@ -41,6 +45,7 @@ com.bestv.ott.baseservices.zp.jsdx
 com.domoko.thumb.yxw
 com.mediatek.bledemo
 "
+fi
 
 echo "=== Memory Before Debloat ==="
 free -m

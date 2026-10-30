@@ -2,7 +2,11 @@
 # restore_bloatware.sh
 # Re-enable all frozen China Telecom / Haobai / Skyworth packages on C10H (SK-L1001)
 
-PACKAGES="
+SCRIPT_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
+if [ -f "$SCRIPT_DIR/debloat-packages.txt" ]; then
+    PACKAGES=$(grep -v '^#' "$SCRIPT_DIR/debloat-packages.txt")
+else
+    PACKAGES="
 com.chinatelecom.accloudbox
 com.haobai.sipphone
 com.skyworthdigital.upgrade
@@ -40,6 +44,7 @@ com.bestv.ott.baseservices.zp.jsdx
 com.domoko.thumb.yxw
 com.mediatek.bledemo
 "
+fi
 
 for pkg in $PACKAGES; do
     pm enable "$pkg" 2>/dev/null

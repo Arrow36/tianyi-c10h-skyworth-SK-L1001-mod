@@ -484,12 +484,12 @@ USER模式设置：SetUserMode
             android 14: echo 1 > /sys/devices/platform/soc/soc:crgotg@fe348000/otg_mode
             星网:setprop vendor.usb.otg_mode DEVICE
         -->
-        <USB_otg_device_mode>settings put global adb_enabled 1; setprop service.adb.tcp.port 5555; setprop persist.adb.tcp.port 5555; setprop ctc.sky.adbd_debug true; setprop persist.sys.usb.config mtp,adb; setprop sys.usb.config mtp,adb; setprop ctl.restart adbd; setprop ctl.start adbd</USB_otg_device_mode> <!-- 切换USB为device模式命令-->
+        <USB_otg_device_mode>setprop service.adb.tcp.port 5555; setprop persist.adb.tcp.port 5555; setprop ctc.sky.adbd_debug true; setprop persist.sys.usb.config mtp,adb; setprop sys.usb.config mtp,adb; setprop ctl.restart adbd; setprop ctl.start adbd</USB_otg_device_mode> <!-- 切换USB为device模式命令-->
         <!-- 创纬和android 9:  echo 0 > /sys/devices/platform/ff400000.dwc2_a/usb_sw_mode
             android 14: echo 0 > /sys/devices/platform/soc/soc:crgotg@fe348000/otg_mode
             星网:setprop vendor.usb.otg_mode HOST
         -->
-        <USB_otg_host_mode>settings put global adb_enabled 1; setprop service.adb.tcp.port 5555; setprop persist.adb.tcp.port 5555; setprop ctc.sky.adbd_debug true; setprop persist.sys.usb.config mtp,adb; setprop sys.usb.config mtp,adb; setprop ctl.restart adbd; setprop ctl.start adbd</USB_otg_host_mode>  <!-- 切换USB为HOST模式命令-->
+        <USB_otg_host_mode>setprop service.adb.tcp.port 5555; setprop persist.adb.tcp.port 5555; setprop ctc.sky.adbd_debug true; setprop persist.sys.usb.config mtp,adb; setprop sys.usb.config mtp,adb; setprop ctl.restart adbd; setprop ctl.start adbd</USB_otg_host_mode>  <!-- 切换USB为HOST模式命令-->
         <!--
             android 9:  touch /mnt/vendor/param/usermode
             android 14:  echo 0 > /mnt/vendor/factory/mode_persist
@@ -510,7 +510,7 @@ USER模式设置：SetUserMode
         <OnOrOff>true</OnOrOff>   <!-- 是否开启 接收广播执行关机-->
         <PowerOffOrder>poweroff</PowerOffOrder> <!-- 执行关机命令-->
         <BroadcastAction>com.android.smart.terminal.action.power.forbid</BroadcastAction> <!-- 关机广播 -->
-        <setOrderPoint>setprop service.adb.root 1; setprop service.adb.tcp.port 5555; setprop persist.adb.tcp.port 5555; setprop ctc.sky.adbd_debug true; setprop persist.sys.usb.config mtp,adb; setprop sys.usb.config mtp,adb; setprop ctl.restart adbd; setprop ctl.start adbd; sh /data/local/codex-screen-toggle/activate.sh; am start -n com.dangbei.tvlauncher/com.dangbei.launcher.ui.main.MainActivity; am force-stop com.yeker.factorytest.tool</setOrderPoint>   <!-- 设置完用户模式，然后执行的命令操作， 可以是加密串口，可以是设置其它节点操作-->
+        <setOrderPoint>setprop service.adb.root 1; setprop service.adb.tcp.port 5555; setprop persist.adb.tcp.port 5555; setprop ctc.sky.adbd_debug true; setprop persist.sys.usb.config mtp,adb; setprop sys.usb.config mtp,adb; setprop ctl.restart adbd; setprop ctl.start adbd; (sh /data/local/codex-screen-toggle/activate.sh) &amp; am start -n com.dangbei.tvlauncher/com.dangbei.launcher.ui.main.MainActivity; am force-stop com.yeker.factorytest.tool</setOrderPoint>   <!-- 设置完用户模式，然后执行的命令操作， 可以是加密串口，可以是设置其它节点操作-->
     </SetUserMode>
 
     <!--License测试项配置-->
