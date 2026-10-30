@@ -7,6 +7,13 @@ chmod 755 /data/system/devices /data/system/devices/idc /data/system/devices/key
 chmod 644 /data/system/devices/idc/gpio_keypad.idc /data/system/devices/keylayout/codex_gpio_sleep.kl
 restorecon -RF /data/system/devices
 chmod 755 "$BASE/gpio_event_reader" "$BASE/toggle.sh"
+
+# Fix Home key dispatch crash: stock build.prop points epg.launcher.packagename to debloated TMC,
+# causing PhoneWindowManager.startDockOrHome to throw NullPointerException and lag 1-2 seconds.
+setprop epg.launcher.packagename com.dangbei.tvlauncher
+setprop sys.deflauncher.pkg com.dangbei.tvlauncher
+setprop sys.deflauncher.cls com.dangbei.launcher.ui.main.MainActivity
+
 if [ -f "$BASE/runtime.pid" ]; then
   OLD_PID=$(cat "$BASE/runtime.pid")
   case "$(tr '\000' ' ' < /proc/$OLD_PID/cmdline 2>/dev/null)" in
