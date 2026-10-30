@@ -4,22 +4,26 @@
 # Frees ~555MB of RAM and blocks silent remote OTA updates & boot popups.
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
-STATE_DIR=/data/local/c10h-debloat
+STATE_DIR="${STATE_DIR:-/data/local/c10h-debloat}"
 SNAPSHOT_FILE="$STATE_DIR/snapshot.txt"
+PACKAGES_FILE="${PACKAGES_FILE:-$SCRIPT_DIR/debloat-packages.txt}"
 
 # 1. Snapshot Protection & Transaction State Check
 if [ -f "$SNAPSHOT_FILE" ]; then
-    if grep -q "^STATUS:IN_PROGRESS" "$SNAPSHOT_FILE"; then
-        echo "[ERROR] An interrupted debloat transaction was detected at: $SNAPSHOT_FILE" >&2
-        echo "        A previous run did not complete cleanly." >&2
-        echo "        Please run 'sh restore_bloatware.sh' to recover your original system state." >&2
-        exit 1
-    fi
     if grep -q "^STATUS:COMPLETED" "$SNAPSHOT_FILE"; then
         echo "[!] Active debloat snapshot already exists at: $SNAPSHOT_FILE" >&2
         echo "    Running debloat again would overwrite your original package state record." >&2
         echo "    To restore your system, run: sh restore_bloatware.sh" >&2
         echo "    To force a fresh debloat, remove $SNAPSHOT_FILE first." >&2
+        exit 1
+    elif grep -q "^STATUS:IN_PROGRESS" "$SNAPSHOT_FILE"; then
+        echo "[ERROR] An interrupted debloat transaction was detected at: $SNAPSHOT_FILE" >&2
+        echo "        A previous run did not complete cleanly." >&2
+        echo "        Please run 'sh restore_bloatware.sh' to recover your original system state." >&2
+        exit 1
+    else
+        echo "[ERROR] Invalid or corrupted snapshot file found at: $SNAPSHOT_FILE" >&2
+        echo "        Please check or remove the file before proceeding." >&2
         exit 1
     fi
 fi
@@ -38,8 +42,8 @@ else
 fi
 
 # 3. Load package list (ignoring comments)
-if [ -f "$SCRIPT_DIR/debloat-packages.txt" ]; then
-    PACKAGES=$(grep -v '^[[:space:]]*#' "$SCRIPT_DIR/debloat-packages.txt" | grep -v '^[[:space:]]*$')
+if [ -f "$PACKAGES_FILE" ]; then
+    PACKAGES=$(grep -v '^[[:space:]]*#' "$PACKAGES_FILE" | grep -v '^[[:space:]]*$')
 else
     PACKAGES="
 com.chinatelecom.accloudbox
@@ -101,7 +105,7 @@ TIMESTAMP=$(date '+%Y-%m-%d %T')
     echo "STATUS:IN_PROGRESS"
     echo "# Debloat WAL transaction started at $TIMESTAMP"
 } > "$SNAPSHOT_FILE" || { echo "[ERROR] Failed to write WAL transaction header to $SNAPSHOT_FILE" >&2; exit 1; }
-sync
+sync || { echo "[ERROR] sync failed during WAL initialization" >&2; exit 1; }
 
 echo "=== Memory Before Debloat ==="
 free -m
@@ -117,47 +121,77 @@ for pkg in $PACKAGES; do
     if pm list packages -d 2>/dev/null | grep -q "^package:${pkg}$"; then
         continue
     fi
-    # WAL Step: Record intended change to persistent log before/with change
+    # WAL Step: Record intended change to persistent log before changing system state
     if ! echo "PKG:$pkg" >> "$SNAPSHOT_FILE"; then
         echo "[ERROR] WAL write failed for $pkg; aborting debloat to preserve transaction consistency!" >&2
         exit 1
     fi
-    sync
+    if ! sync; then
+        echo "[ERROR] sync failed after recording $pkg; aborting debloat!" >&2
+        exit 1
+    fi
 
     # Execute disable operation
     if pm disable-user --user 0 "$pkg" >/dev/null 2>&1; then
         am force-stop "$pkg" >/dev/null 2>&1
         DISABLED_COUNT=$((DISABLED_COUNT + 1))
     else
-        echo "[!] Warning: failed to disable $pkg; rolling back WAL entry." >&2
-        sed -i "/^PKG:${pkg}$/d" "$SNAPSHOT_FILE"
-        sync
+        echo "[ERROR] Failed to disable $pkg via pm disable-user! Retaining WAL entry for recovery." >&2
+        echo "        Aborting further debloat operations. Please run restore_bloatware.sh." >&2
+        exit 1
     fi
 done
 
 # 7. Optimize Dangbei Launcher service hook (record only if currently active)
 DANGBEI_SERVICE="com.dangbei.tvlauncher/com.dangbei.launcher.service.HomeKeyEventCatchService"
 if pm list packages 2>/dev/null | grep -q "^package:com.dangbei.tvlauncher$"; then
-    # Full multi-line check of disabledComponents
-    IS_DISABLED=$(dumpsys package com.dangbei.tvlauncher 2>/dev/null | sed -n '/disabledComponents:/,/^[[:space:]]*[A-Za-z]/p' | grep "HomeKeyEventCatchService")
-    if [ -n "$IS_DISABLED" ]; then
-        echo "[*] Dangbei HomeKeyEventCatchService is already disabled; skipping snapshot entry."
+    DUMP_OUT=$(dumpsys package com.dangbei.tvlauncher 2>/dev/null)
+    if [ -z "$DUMP_OUT" ] || ! echo "$DUMP_OUT" | grep -q "User 0:"; then
+        echo "[!] Warning: Cannot reliably inspect Dangbei launcher state; skipping service modification." >&2
     else
-        if echo "SERVICE:$DANGBEI_SERVICE" >> "$SNAPSHOT_FILE"; then
-            sync
+        IS_DISABLED=$(echo "$DUMP_OUT" | awk '
+            /User 0:/ { in_u0 = 1; next }
+            in_u0 && (/User [0-9]+:/ || /Package Changes:/) { in_u0 = 0; in_dis = 0 }
+            in_u0 && /disabledComponents:/ { in_dis = 1; next }
+            in_dis {
+                if ($0 ~ /:[ \t\r]*$/ || $0 ~ /^[ \t\r]*$/ || $0 ~ /^[^ \t]/) {
+                    in_dis = 0
+                } else if ($1 != "") {
+                    print $1
+                }
+            }
+        ' | grep -x "com.dangbei.launcher.service.HomeKeyEventCatchService")
+
+        if [ -n "$IS_DISABLED" ]; then
+            echo "[*] Dangbei HomeKeyEventCatchService is already disabled; skipping snapshot entry."
+        else
+            if ! echo "SERVICE:$DANGBEI_SERVICE" >> "$SNAPSHOT_FILE"; then
+                echo "[ERROR] WAL write failed for $DANGBEI_SERVICE; aborting!" >&2
+                exit 1
+            fi
+            if ! sync; then
+                echo "[ERROR] sync failed after recording $DANGBEI_SERVICE; aborting!" >&2
+                exit 1
+            fi
             if pm disable "$DANGBEI_SERVICE" >/dev/null 2>&1; then
                 echo "[+] Disabled Dangbei HomeKeyEventCatchService hook."
             else
-                echo "[!] Warning: failed to disable $DANGBEI_SERVICE; rolling back entry." >&2
-                sed -i "\#^SERVICE:${DANGBEI_SERVICE}#d" "$SNAPSHOT_FILE"
-                sync
+                echo "[ERROR] Failed to disable $DANGBEI_SERVICE! Retaining entry for recovery." >&2
+                exit 1
             fi
         fi
     fi
 fi
 
 # 8. Mark transaction COMPLETED
-echo "STATUS:COMPLETED" >> "$SNAPSHOT_FILE"
+if ! echo "STATUS:COMPLETED" >> "$SNAPSHOT_FILE"; then
+    echo "[ERROR] Failed to commit STATUS:COMPLETED to WAL snapshot!" >&2
+    exit 1
+fi
+if ! sync; then
+    echo "[ERROR] sync failed when committing STATUS:COMPLETED!" >&2
+    exit 1
+fi
 sync
 
 echo "=== Memory After Debloat ==="

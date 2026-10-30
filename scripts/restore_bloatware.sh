@@ -4,20 +4,26 @@
 # Restores ONLY packages and services that were actually frozen by debloat.sh.
 # Supports recovery from both COMPLETED and interrupted IN_PROGRESS transactions.
 
-STATE_DIR=/data/local/c10h-debloat
+STATE_DIR="${STATE_DIR:-/data/local/c10h-debloat}"
 SNAPSHOT_FILE="$STATE_DIR/snapshot.txt"
 SCRIPT_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
+PACKAGES_FILE="${PACKAGES_FILE:-$SCRIPT_DIR/debloat-packages.txt}"
 MODE="${1:-}"
 
 RESTORED_COUNT=0
 FAILED_COUNT=0
 
 if [ -f "$SNAPSHOT_FILE" ]; then
-    if grep -q "^STATUS:IN_PROGRESS" "$SNAPSHOT_FILE" && ! grep -q "^STATUS:COMPLETED" "$SNAPSHOT_FILE"; then
-        echo "[!] Detected incomplete or interrupted debloat transaction in $SNAPSHOT_FILE."
+    if grep -q "^STATUS:COMPLETED" "$SNAPSHOT_FILE"; then
+        echo "[*] Found verified debloat state snapshot: $SNAPSHOT_FILE"
+    elif grep -q "^STATUS:IN_PROGRESS" "$SNAPSHOT_FILE"; then
+        echo "[!] WARNING: Detected incomplete or interrupted debloat transaction in $SNAPSHOT_FILE."
         echo "[*] Recovering all components recorded up to the interruption point..."
     else
-        echo "[*] Found verified debloat state snapshot: $SNAPSHOT_FILE"
+        echo "[ERROR] Snapshot file $SNAPSHOT_FILE is corrupted or missing a valid transaction status header!" >&2
+        echo "        Refusing to execute unverified restore. The snapshot will NOT be deleted." >&2
+        echo "        Please inspect the snapshot manually or run with --legacy-restore if using legacy format." >&2
+        exit 1
     fi
 
     while read -r line || [ -n "$line" ]; do
@@ -25,10 +31,11 @@ if [ -f "$SNAPSHOT_FILE" ]; then
             PKG:*)
                 pkg="${line#PKG:}"
                 if [ -n "$pkg" ]; then
-                    if pm enable "$pkg" >/dev/null 2>&1; then
+                    # Restore component to default state first; fallback to enable
+                    if pm default-state --user 0 "$pkg" >/dev/null 2>&1 || pm enable --user 0 "$pkg" >/dev/null 2>&1 || pm enable "$pkg" >/dev/null 2>&1; then
                         RESTORED_COUNT=$((RESTORED_COUNT + 1))
                     else
-                        echo "[!] Warning: failed to re-enable package: $pkg" >&2
+                        echo "[!] Warning: failed to restore package: $pkg" >&2
                         FAILED_COUNT=$((FAILED_COUNT + 1))
                     fi
                 fi
@@ -36,25 +43,29 @@ if [ -f "$SNAPSHOT_FILE" ]; then
             SERVICE:*)
                 svc="${line#SERVICE:}"
                 if [ -n "$svc" ]; then
-                    if pm enable "$svc" >/dev/null 2>&1; then
+                    if pm default-state "$svc" >/dev/null 2>&1 || pm enable "$svc" >/dev/null 2>&1; then
                         echo "[+] Restored service: $svc"
                     else
-                        echo "[!] Warning: failed to re-enable service: $svc" >&2
+                        echo "[!] Warning: failed to restore service: $svc" >&2
                         FAILED_COUNT=$((FAILED_COUNT + 1))
                     fi
                 fi
                 ;;
-            *)
+            "STATUS:"*|"#"*|"")
                 # STATUS header, comments, or blank lines
+                ;;
+            *)
+                echo "[!] Warning: unrecognized line format in snapshot: $line" >&2
+                FAILED_COUNT=$((FAILED_COUNT + 1))
                 ;;
         esac
     done < "$SNAPSHOT_FILE"
 
     if [ "$FAILED_COUNT" -eq 0 ]; then
         # Archive snapshot file only when all operations succeeded
-        mv "$SNAPSHOT_FILE" "$SNAPSHOT_FILE.restored"
-        sync
-        echo "[+] Snapshot restore complete. Re-enabled $RESTORED_COUNT packages."
+        mv "$SNAPSHOT_FILE" "$SNAPSHOT_FILE.restored" || { echo "[ERROR] Failed to archive snapshot" >&2; exit 1; }
+        sync || { echo "[ERROR] sync failed after archiving snapshot" >&2; exit 1; }
+        echo "[+] Snapshot restore complete. Restored $RESTORED_COUNT packages."
         echo "[+] Archived snapshot to $SNAPSHOT_FILE.restored"
         exit 0
     else
@@ -65,8 +76,8 @@ if [ -f "$SNAPSHOT_FILE" ]; then
 else
     if [ "$MODE" = "--legacy-restore" ]; then
         echo "[*] Running in --legacy-restore mode (unconditional enable from package list)..."
-        if [ -f "$SCRIPT_DIR/debloat-packages.txt" ]; then
-            PACKAGES=$(grep -v '^[[:space:]]*#' "$SCRIPT_DIR/debloat-packages.txt" | grep -v '^[[:space:]]*$')
+        if [ -f "$PACKAGES_FILE" ]; then
+            PACKAGES=$(grep -v '^[[:space:]]*#' "$PACKAGES_FILE" | grep -v '^[[:space:]]*$')
         else
             PACKAGES="
 com.chinatelecom.accloudbox
@@ -108,12 +119,12 @@ com.mediatek.bledemo
         fi
 
         for pkg in $PACKAGES; do
-            pm enable "$pkg" >/dev/null 2>&1
+            pm default-state --user 0 "$pkg" >/dev/null 2>&1 || pm enable --user 0 "$pkg" >/dev/null 2>&1 || pm enable "$pkg" >/dev/null 2>&1
             RESTORED_COUNT=$((RESTORED_COUNT + 1))
         done
 
         # Also restore Dangbei service if present
-        pm enable com.dangbei.tvlauncher/com.dangbei.launcher.service.HomeKeyEventCatchService >/dev/null 2>&1
+        pm default-state "com.dangbei.tvlauncher/com.dangbei.launcher.service.HomeKeyEventCatchService" >/dev/null 2>&1 || pm enable "com.dangbei.tvlauncher/com.dangbei.launcher.service.HomeKeyEventCatchService" >/dev/null 2>&1
         echo "[+] Legacy restore complete. Re-enabled $RESTORED_COUNT packages."
         exit 0
     else

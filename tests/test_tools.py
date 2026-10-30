@@ -1,5 +1,7 @@
 import importlib.util
+import os
 from pathlib import Path
+import shutil
 import struct
 import subprocess
 import sys
@@ -134,6 +136,7 @@ class ToolTests(unittest.TestCase):
         self.assertIn('sync', debloat_sh, "debloat.sh must sync WAL entries to disk")
         self.assertIn('com.tatv.android.TMC is permanently protected', debloat_sh, "debloat.sh must hard-block disabling TMC")
         self.assertIn('disabledComponents:', debloat_sh)
+        self.assertIn('Retaining WAL entry for recovery', debloat_sh, "debloat.sh must retain WAL entry if pm disable fails")
 
     def test_restore_precision_guard_and_legacy_flag(self):
         restore_sh = (ROOT / 'scripts/restore_bloatware.sh').read_text(encoding='utf-8')
@@ -141,6 +144,7 @@ class ToolTests(unittest.TestCase):
         self.assertIn('--legacy-restore', restore_sh, "restore_bloatware.sh must require explicit flag when snapshot missing")
         self.assertIn('Refusing to blindly enable all packages', restore_sh)
         self.assertIn('FAILED_COUNT', restore_sh, "restore_bloatware.sh must check pm enable exit status")
+        self.assertIn('pm default-state', restore_sh, "restore_bloatware.sh should restore default-state for fidelity")
 
     def test_enable_keys_verifies_root_uid(self):
         cmd_content = (ROOT / 'scripts/key_remap/enable_keys.cmd').read_text(encoding='utf-8')
@@ -196,6 +200,209 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(pkgs3, ["com.test.app"])
         self.assertEqual(svcs3, ["com.dangbei.tvlauncher/com.dangbei.launcher.service.HomeKeyEventCatchService"])
         self.assertTrue(ok3)
+
+
+class ShellIntegrationTests(unittest.TestCase):
+    """End-to-end integration tests actually executing the shell scripts with mock Android tools."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.sh_exe = shutil.which('sh') or r'C:\Program Files\Git\bin\sh.exe'
+        if not Path(cls.sh_exe).exists():
+            raise unittest.SkipTest("POSIX sh executable not found for integration testing")
+
+    def create_mock_env(self, tmp_path, mock_dumpsys_text=""):
+        mock_bin = tmp_path / 'bin'
+        mock_bin.mkdir(exist_ok=True)
+
+        pm_code = '''#!/bin/sh
+cmd="$1"
+case "$cmd" in
+    path)
+        pkg="$2"
+        if [ "$pkg" = "com.uninstalled.app" ]; then
+            exit 1
+        fi
+        echo "package:/system/app/$pkg.apk"
+        exit 0
+        ;;
+    list)
+        if [ "$2" = "packages" ] && [ "$3" = "-d" ]; then
+            if [ -f "$MOCK_DISABLED_FILE" ]; then
+                cat "$MOCK_DISABLED_FILE"
+            fi
+            exit 0
+        elif [ "$2" = "packages" ]; then
+            echo "package:com.test.app1"
+            echo "package:com.dangbei.tvlauncher"
+            exit 0
+        fi
+        ;;
+    disable-user)
+        pkg="$4"
+        if [ "$pkg" = "$FAIL_ON_PKG" ]; then
+            echo "Error: mock failure on $pkg" >&2
+            exit 1
+        fi
+        echo "package:$pkg" >> "$MOCK_DISABLED_FILE"
+        exit 0
+        ;;
+    disable)
+        svc="$2"
+        if [ "$FAIL_ON_SVC" = "1" ]; then
+            echo "Error: mock failure on service" >&2
+            exit 1
+        fi
+        echo "service:$svc" >> "$MOCK_DISABLED_FILE"
+        exit 0
+        ;;
+    default-state|enable)
+        exit 0
+        ;;
+esac
+exit 0
+'''
+        (mock_bin / 'pm').write_text(pm_code, encoding='utf-8')
+        (mock_bin / 'am').write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
+        (mock_bin / 'free').write_text('#!/bin/sh\necho "             total        used        free"\necho "Mem:           1800        1200         600"\n', encoding='utf-8')
+        (mock_bin / 'sync').write_text('#!/bin/sh\nif [ "$FAIL_SYNC" = "1" ]; then exit 1; fi\nexit 0\n', encoding='utf-8')
+        (mock_bin / 'setprop').write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
+
+        dumpsys_file = tmp_path / 'dumpsys_output.txt'
+        dumpsys_file.write_text(mock_dumpsys_text, encoding='utf-8')
+
+        dumpsys_code = f'''#!/bin/sh
+cat "{dumpsys_file.as_posix()}"
+exit 0
+'''
+        (mock_bin / 'dumpsys').write_text(dumpsys_code, encoding='utf-8')
+
+        env = os.environ.copy()
+        env['PATH'] = str(mock_bin) + os.pathsep + env.get('PATH', '')
+        env['MOCK_DISABLED_FILE'] = str(tmp_path / 'disabled_pkgs.txt')
+        return env
+
+    def test_shell_debloat_and_restore_full_cycle(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            state_dir = tmp_path / 'state'
+            pkg_file = tmp_path / 'packages.txt'
+            pkg_file.write_text("com.test.app1\ncom.test.app2\n", encoding='utf-8')
+
+            env = self.create_mock_env(tmp_path)
+            env['STATE_DIR'] = str(state_dir)
+            env['PACKAGES_FILE'] = str(pkg_file)
+
+            debloat_script = (ROOT / 'scripts/debloat.sh').as_posix()
+            restore_script = (ROOT / 'scripts/restore_bloatware.sh').as_posix()
+
+            # 1. Run debloat
+            res = subprocess.run([self.sh_exe, debloat_script], env=env, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0, f"debloat.sh failed: {res.stderr}")
+
+            snapshot = state_dir / 'snapshot.txt'
+            self.assertTrue(snapshot.exists(), "snapshot.txt must exist after debloat")
+            snap_text = snapshot.read_text(encoding='utf-8')
+            self.assertIn("STATUS:IN_PROGRESS", snap_text)
+            self.assertIn("PKG:com.test.app1", snap_text)
+            self.assertIn("PKG:com.test.app2", snap_text)
+            self.assertIn("STATUS:COMPLETED", snap_text)
+
+            # 2. Run debloat again -> must reject because completed snapshot exists
+            res_repeat = subprocess.run([self.sh_exe, debloat_script], env=env, capture_output=True, text=True)
+            self.assertEqual(res_repeat.returncode, 1)
+            self.assertIn("Active debloat snapshot already exists", res_repeat.stderr)
+
+            # 3. Run restore_bloatware.sh
+            res_restore = subprocess.run([self.sh_exe, restore_script], env=env, capture_output=True, text=True)
+            self.assertEqual(res_restore.returncode, 0, f"restore_bloatware.sh failed: {res_restore.stderr}")
+            self.assertFalse(snapshot.exists(), "snapshot.txt must be archived")
+            self.assertTrue((state_dir / 'snapshot.txt.restored').exists(), "snapshot.txt.restored must exist")
+
+    def test_shell_failure_injection_retains_wal_and_recovers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            state_dir = tmp_path / 'state'
+            pkg_file = tmp_path / 'packages.txt'
+            pkg_file.write_text("com.test.ok\ncom.test.failpkg\ncom.test.unreached\n", encoding='utf-8')
+
+            env = self.create_mock_env(tmp_path)
+            env['STATE_DIR'] = str(state_dir)
+            env['PACKAGES_FILE'] = str(pkg_file)
+            env['FAIL_ON_PKG'] = 'com.test.failpkg'
+
+            debloat_script = (ROOT / 'scripts/debloat.sh').as_posix()
+            restore_script = (ROOT / 'scripts/restore_bloatware.sh').as_posix()
+
+            # 1. Run debloat -> must fail on com.test.failpkg
+            res = subprocess.run([self.sh_exe, debloat_script], env=env, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 1)
+            self.assertIn("Retaining WAL entry for recovery", res.stderr)
+
+            snapshot = state_dir / 'snapshot.txt'
+            self.assertTrue(snapshot.exists())
+            snap_text = snapshot.read_text(encoding='utf-8')
+            self.assertIn("STATUS:IN_PROGRESS", snap_text)
+            self.assertIn("PKG:com.test.ok", snap_text)
+            self.assertIn("PKG:com.test.failpkg", snap_text, "Failed package MUST be retained in WAL")
+            self.assertNotIn("PKG:com.test.unreached", snap_text)
+            self.assertNotIn("STATUS:COMPLETED", snap_text)
+
+            # 2. Run debloat again -> must detect interrupted transaction and block
+            res_repeat = subprocess.run([self.sh_exe, debloat_script], env=env, capture_output=True, text=True)
+            self.assertEqual(res_repeat.returncode, 1)
+            self.assertIn("interrupted debloat transaction was detected", res_repeat.stderr)
+
+            # 3. Run restore_bloatware.sh -> recovers interrupted transaction
+            env['FAIL_ON_PKG'] = ''  # Clear failure trigger for restore
+            res_restore = subprocess.run([self.sh_exe, restore_script], env=env, capture_output=True, text=True)
+            self.assertEqual(res_restore.returncode, 0, f"restore failed: {res_restore.stderr}")
+            self.assertIn("Detected incomplete or interrupted debloat transaction", res_restore.stdout)
+            self.assertTrue((state_dir / 'snapshot.txt.restored').exists())
+
+    def test_shell_dangbei_multi_component_preservation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            state_dir = tmp_path / 'state'
+            pkg_file = tmp_path / 'packages.txt'
+            pkg_file.write_text("", encoding='utf-8')
+
+            # Codex's multi-component test case where HomeKeyEventCatchService is already disabled
+            codex_dumpsys = """
+    User 0: ceDataInode=-12345 installed=true
+      disabledComponents:
+        com.example.FirstService
+        com.dangbei.launcher.service.HomeKeyEventCatchService
+      enabledComponents:
+"""
+            env = self.create_mock_env(tmp_path, mock_dumpsys_text=codex_dumpsys)
+            env['STATE_DIR'] = str(state_dir)
+            env['PACKAGES_FILE'] = str(pkg_file)
+
+            debloat_script = (ROOT / 'scripts/debloat.sh').as_posix()
+            res = subprocess.run([self.sh_exe, debloat_script], env=env, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 0, f"debloat failed: {res.stderr}")
+
+            snap_text = (state_dir / 'snapshot.txt').read_text(encoding='utf-8')
+            self.assertNotIn("SERVICE:com.dangbei.tvlauncher/com.dangbei.launcher.service.HomeKeyEventCatchService", snap_text,
+                             "Service already disabled in multi-component list must NOT be added to WAL snapshot")
+
+    def test_shell_corrupted_snapshot_rejection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            state_dir = tmp_path / 'state'
+            state_dir.mkdir()
+            bad_snap = state_dir / 'snapshot.txt'
+            bad_snap.write_text("CORRUPTED_GARBAGE_NO_HEADER\nPKG:com.test.bad\n", encoding='utf-8')
+
+            env = self.create_mock_env(tmp_path)
+            env['STATE_DIR'] = str(state_dir)
+
+            restore_script = (ROOT / 'scripts/restore_bloatware.sh').as_posix()
+            res = subprocess.run([self.sh_exe, restore_script], env=env, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 1, "restore must reject corrupted snapshot")
+            self.assertIn("corrupted or missing a valid transaction status header", res.stderr)
+            self.assertTrue(bad_snap.exists(), "Corrupted snapshot file must NOT be deleted")
 
 
 if __name__ == '__main__':
