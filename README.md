@@ -171,9 +171,20 @@ adb push scripts/debloat.sh /data/local/tmp/
 adb shell "sh /data/local/tmp/debloat.sh"
 ```
 **优化效果**：
-- 禁用了包括 `com.skyworthdigital.upgrade`、`com.tatv.android.TMC`、`com.ctcc.devops` 在内的所有远程静默升级服务，彻底杜绝固件被运营商远程覆盖锁死的隐患；
+- 禁用了包括 `com.skyworthdigital.upgrade`、`com.ctcc.devops` 在内的所有远程静默升级服务，彻底杜绝固件被运营商远程覆盖锁死的隐患（注：`com.tatv.android.TMC` 默认保留受策略硬保护，确保主页键冷启动导航永不失效）；
 - 冻结了翼家智话、小翼管家、各种冗余语音助手与学习推送组件；
 - **可用内存从 125MB 提升至 680MB 以上**（可用内存提升 **5.4 倍**），整机操作脱胎换骨。
+
+### 精准状态恢复（restore_bloatware.sh）与保真度界定
+若需还原被冻结的系统组件，项目提供具备事务安全保证的 `scripts/restore_bloatware.sh`：
+```sh
+adb push scripts/restore_bloatware.sh /data/local/tmp/
+adb shell "sh /data/local/tmp/restore_bloatware.sh"
+```
+- **预写式事务日志 (WAL) 保障**：每次精简均先持久化写盘 `STATUS:IN_PROGRESS` 及变更条目，全部成功后提交 `STATUS:COMPLETED`。若精简中途遭遇断电或异常，恢复脚本会自动识别未完成事务并回滚已冻结组件。
+- **两阶段严格预检**：恢复前对快照执行全量静态语法校验，发现任何破损或非法格式即刻拒绝执行，确保设备状态分毫不动。
+- **状态保真度界定**：恢复时优先调用 `pm default-state --user 0 <pkg>` 恢复至出厂默认组件状态（`COMPONENT_ENABLED_STATE_DEFAULT`），必要时兼容回退至 `pm enable`。本恢复机制的目标是**确保被精简组件 100% 恢复为可用与功能完整状态**，而非逆向还原 Android 包管理器内部全部细粒度历史标记。
+- **无快照防盲目恢复**：若未检测到有效快照，脚本坚决拒绝盲目全量解冻，需显式传入 `--legacy-restore` 才能触发兼容列表恢复。
 
 ---
 

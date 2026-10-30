@@ -26,6 +26,41 @@ if [ -f "$SNAPSHOT_FILE" ]; then
         exit 1
     fi
 
+    # Pass 1: Pre-flight static validation of WAL format and record integrity
+    PRECHECK_FAILED=0
+    while read -r line || [ -n "$line" ]; do
+        case "$line" in
+            PKG:*)
+                pkg="${line#PKG:}"
+                if [ -z "$pkg" ] || echo "$pkg" | grep -q '[^a-zA-Z0-9._]'; then
+                    echo "[ERROR] Pre-flight validation failed: invalid package identifier '$pkg'" >&2
+                    PRECHECK_FAILED=1
+                fi
+                ;;
+            SERVICE:*)
+                svc="${line#SERVICE:}"
+                if [ -z "$svc" ] || echo "$svc" | grep -q '[^a-zA-Z0-9._/]'; then
+                    echo "[ERROR] Pre-flight validation failed: invalid service identifier '$svc'" >&2
+                    PRECHECK_FAILED=1
+                fi
+                ;;
+            "STATUS:IN_PROGRESS"|"STATUS:COMPLETED"|"#"*|"")
+                # Valid headers, comments, or blank lines
+                ;;
+            *)
+                echo "[ERROR] Pre-flight validation failed: unrecognized record format in WAL: '$line'" >&2
+                PRECHECK_FAILED=1
+                ;;
+        esac
+    done < "$SNAPSHOT_FILE"
+
+    if [ "$PRECHECK_FAILED" -ne 0 ]; then
+        echo "[ERROR] Snapshot pre-flight validation failed. Refusing to execute restore." >&2
+        echo "        Device state has NOT been altered. Snapshot retained at $SNAPSHOT_FILE." >&2
+        exit 1
+    fi
+
+    # Pass 2: Execute precision restoration (all records pre-verified)
     while read -r line || [ -n "$line" ]; do
         case "$line" in
             PKG:*)
@@ -53,10 +88,6 @@ if [ -f "$SNAPSHOT_FILE" ]; then
                 ;;
             "STATUS:"*|"#"*|"")
                 # STATUS header, comments, or blank lines
-                ;;
-            *)
-                echo "[!] Warning: unrecognized line format in snapshot: $line" >&2
-                FAILED_COUNT=$((FAILED_COUNT + 1))
                 ;;
         esac
     done < "$SNAPSHOT_FILE"

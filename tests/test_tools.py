@@ -404,6 +404,25 @@ exit 0
             self.assertIn("corrupted or missing a valid transaction status header", res.stderr)
             self.assertTrue(bad_snap.exists(), "Corrupted snapshot file must NOT be deleted")
 
+    def test_shell_mid_file_corruption_preflight_blocks_restore(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            state_dir = tmp_path / 'state'
+            state_dir.mkdir()
+            bad_snap = state_dir / 'snapshot.txt'
+            # Has valid header, but invalid record in the middle
+            bad_snap.write_text("STATUS:IN_PROGRESS\nPKG:com.test.valid\nINVALID_RECORD_LINE\nSTATUS:COMPLETED\n", encoding='utf-8')
+
+            env = self.create_mock_env(tmp_path)
+            env['STATE_DIR'] = str(state_dir)
+
+            restore_script = (ROOT / 'scripts/restore_bloatware.sh').as_posix()
+            res = subprocess.run([self.sh_exe, restore_script], env=env, capture_output=True, text=True)
+            self.assertEqual(res.returncode, 1, "restore must abort during pre-flight on corrupted record")
+            self.assertIn("Snapshot pre-flight validation failed", res.stderr)
+            self.assertIn("Device state has NOT been altered", res.stderr)
+            self.assertTrue(bad_snap.exists(), "Snapshot must be retained untouched")
+
 
 if __name__ == '__main__':
     unittest.main()
