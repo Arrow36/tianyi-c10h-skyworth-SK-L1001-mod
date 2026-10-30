@@ -101,6 +101,32 @@ class ToolTests(unittest.TestCase):
                     certificates.append(load_der_pkcs7_certificates(archive.read('META-INF/CERT.RSA'))[0].public_bytes(Encoding.DER))
             self.assertEqual(*certificates)
 
+    def test_debloat_tmc_retained_by_default(self):
+        debloat_txt = (ROOT / 'scripts/debloat-packages.txt').read_text(encoding='utf-8')
+        active_pkgs = [line.strip() for line in debloat_txt.splitlines() if line.strip() and not line.strip().startswith('#')]
+        self.assertNotIn('com.tatv.android.TMC', active_pkgs, "TMC must remain commented/retained by default to protect Home key navigation")
+
+    def test_key_threshold_consistency_across_code_and_docs(self):
+        toggle_sh = (ROOT / 'scripts/key_remap/toggle.sh').read_text(encoding='utf-8')
+        adc_sh = (ROOT / 'scripts/key_remap/adc_toggle.sh').read_text(encoding='utf-8')
+        readme = (ROOT / 'README.md').read_text(encoding='utf-8')
+        skill = (ROOT / 'skills/skyworth-c10h-modding/SKILL.md').read_text(encoding='utf-8')
+        remap_readme = (ROOT / 'scripts/key_remap/README.md').read_text(encoding='utf-8')
+
+        self.assertIn('POWER_HOLD_SEC=0.35', toggle_sh)
+        self.assertIn('F9_HOLD_SEC=0.35', toggle_sh)
+        self.assertIn('F10_HOLD_SEC=0.35', adc_sh)
+
+        for doc_name, text in [('README.md', readme), ('SKILL.md', skill), ('key_remap/README.md', remap_readme)]:
+            self.assertNotIn('<0.6s', text, f"Found obsolete <0.6s in {doc_name}")
+            self.assertNotIn('>=0.6s', text, f"Found obsolete >=0.6s in {doc_name}")
+            self.assertIn('0.35', text, f"Missing 0.35s threshold description in {doc_name}")
+
+    def test_fix_launcher_script_exists_and_references_dangbei(self):
+        fix_sh = (ROOT / 'scripts/fix_launcher.sh').read_text(encoding='utf-8')
+        self.assertIn('com.dangbei.tvlauncher', fix_sh)
+        self.assertIn('epg.launcher.packagename', fix_sh)
+
 
 if __name__ == '__main__':
     unittest.main()

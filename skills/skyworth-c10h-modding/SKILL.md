@@ -60,8 +60,9 @@ Use this skill when assisting a user with a **China Telecom Tianyi Smart Screen 
 ### Phase 6: Physical Key Remapping & Screen Toggle Daemon
 1. Push `scripts/key_remap/*` to `/data/local/codex-screen-toggle/` on the device and set executable permissions.
 2. The solution remaps:
-   - Power (scancode 116): toggles display sleep/wake via `dumpsys power` and `input keyevent 223/224`.
-   - F9 (scancode 67): short press (<0.6s) -> Back (`keyevent 4`), long press (>=0.6s) -> Home (`keyevent 3`).
-   - F10 (scancode 68): short press (<0.6s) -> Confirm (`keyevent 23`), long press (>=0.6s) -> Recents (`com.android.systemui/.recents.RecentsActivity`).
+   - Power (scancode 116): short press (<0.35s) -> toggles display sleep/wake (`keyevent 223/224`), long press (>=0.35s) -> native shutdown/reboot dialog via `REQUEST_SHUTDOWN` activity (~70ms).
+   - F9 (scancode 67): short press (<0.35s) -> Back (`keyevent 4`), long press (>=0.35s) -> Home (`am start Home`).
+   - F10 (scancode 68): short press (<0.35s) -> Confirm (`keyevent 23`), long press (>=0.35s) -> Recents (`com.android.systemui/.recents.RecentsActivity`).
+   - Triggering model: Instant non-blocking trigger when held >=0.35s (no need to wait for finger release).
 3. Uses driver unbind/bind reload trick to apply custom layouts in `/data/system/devices/keylayout/` without modifying read-only `/vendor`.
 4. Executes automatically on boot via FactoryTestTool `<setOrderPoint>`.

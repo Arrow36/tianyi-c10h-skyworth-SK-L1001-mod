@@ -3,7 +3,9 @@ com.haobai.sipphone
 com.skyworthdigital.upgrade
 com.skyworthdigital.usbupgrade
 com.skyworthdigital.uploadlog
-com.tatv.android.TMC
+# Telecom / Skyworth Stock Launcher (Retained by default for Home navigation safety;
+# only freeze if fix_launcher.sh or custom launcher property is verified active)
+# com.tatv.android.TMC
 com.tatv.android.uss
 com.telecom.eventtracker
 com.ctcc.devops

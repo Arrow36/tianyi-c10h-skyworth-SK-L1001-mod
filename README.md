@@ -256,9 +256,9 @@ adb forward tcp:9222 localabstract:webview_devtools_remote_<PID>
 
 | 实体按键 | 对应驱动设备 | 扫描码 (Scancode) | 重映射行为 | 判定阈值 |
 |---|---|---|---|---|
-| **电源键** | `gpio_keypad` | 116 (`KEY_POWER`) | **短按：息屏 / 亮屏切换**（检测 `sys.switch.screen` 执行 223/224）<br>**长按：呼出原生系统关机与重启菜单** | 松开判定：<0.6s 为开关屏，≥0.6s 呼出关机/重启面板 |
-| **F9 键** | `gpio_keypad` | 67 | **短按：返回 (BACK / `keyevent 4`)**<br>**长按：主页 (HOME / `keyevent 3`)** | 松开判定：<0.6s 为返回，≥0.6s 为主页（长按不会误触发返回） |
-| **F10 键** | `adc_keypad` | 68 (原静音) | **短按：确认 (CONFIRM / `keyevent 23`)**<br>**长按：最近任务卡片 (`RecentsActivity`)** | 松开判定：<0.6s 为确认，≥0.6s 呼出后台多任务卡片 |
+| **电源键** | `gpio_keypad` | 116 (`KEY_POWER`) | **短按：息屏 / 亮屏切换**（检测 `sys.switch.screen` 执行 223/224）<br>**长按：原生系统关机与重启菜单**（70ms 零 JVM 极速弹出） | 按住达到 **0.35s** 原地立刻弹出关机/重启菜单；<0.35s 松手为开关屏 |
+| **F9 键** | `gpio_keypad` | 67 | **短按：返回 (BACK / `keyevent 4`)**<br>**长按：主页 (HOME / `am start Home`)** | 按住达到 **0.35s** 原地立刻回到桌面；<0.35s 松手为返回 |
+| **F10 键** | `adc_keypad` | 68 (原静音) | **短按：确认 (CONFIRM / `keyevent 23`)**<br>**长按：最近任务卡片 (`RecentsActivity`)** | 按住达到 **0.35s** 原地立刻呼出后台任务卡片；<0.35s 松手为确认 |
 
 #### 关键技术亮点
 1. **免写只读 `/vendor` 分区的动态 Layout 注入**：
