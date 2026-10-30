@@ -51,7 +51,7 @@ Use this skill when assisting a user with a **China Telecom Tianyi Smart Screen 
    ```sh
    adb shell "pm uninstall -k --user 0 com.jsdx.speaker.launcher"
    ```
-2. Run `scripts/debloat.sh` over ADB to freeze 36 Telecom/Haobai/OTA/Education bloatware packages (including the 90-second boot popup `com.chinatelecom.accloudbox` and `com.haobai.sipphone`), freeing ~555MB RAM.
+2. Run `scripts/debloat.sh` over ADB to freeze 36 Telecom/Haobai/OTA/Education bloatware packages (including the 90-second boot popup `com.chinatelecom.accloudbox` and `com.haobai.sipphone`), freeing ~555MB RAM, and disables `com.dangbei.tvlauncher/com.dangbei.launcher.service.HomeKeyEventCatchService` to prevent desktop reload and wallpaper lag on system dialog close.
 
 ### Phase 5: Fixing 32-Bit Android 9 `libcrypto.so` / `libssl.so` Symbol Collisions
 - Apps like modern Bilibili (`tv.danmaku.bili`) bundle their own BoringSSL `libcrypto.so` and `libssl.so` (referencing symbols like `EVP_hpke_aes_128_gcm`). Because Android 9 Zygote preloads `/system/lib/libcrypto.so` and `/system/lib/libssl.so`, dynamic linking resolves `DT_NEEDED: libcrypto.so` to the older system library and crashes with `UnsatisfiedLinkError`.

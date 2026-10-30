@@ -34,15 +34,18 @@
    - 直接监听 `/dev/input/event*` 的 Linux `input_event` 结构体，精确计算按键按下到松开的微秒级时间差，输出 `PRESS / RELEASE / DURATION` 事件流。
 3. **事件分流脚本 (`toggle.sh` & `adc_toggle.sh`)**：
    - 管道接收事件持续时间并判定时长，通过 `input` 或 `am` 执行对应操作。
-4. **系统级 Home 键派发 NullPointerException 崩溃根治**：
-   - 原厂固件在 `/system/build.prop` 中写死了 `epg.launcher.packagename=com.tatv.android.TMC`。在精简冻结 TMC 后，原生框架 `PhoneWindowManager.startDockOrHome()` 调用 `pm.getLaunchIntentForPackage()` 返回 `null`，随后的 `intent.putExtra("GoHome", "true")` 导致按键处理未捕获异常崩溃，造成按 Home 返回桌面卡在壁纸 1~2 秒才超时的假象。
-   - `activate.sh` 启动时自动纠偏：
+4. **系统级 Home 键崩溃与当贝桌面自杀式重载双重根治**：
+   - **底层 Framework 崩溃修复**：原厂固件在 `/system/build.prop` 中写死了 `epg.launcher.packagename=com.tatv.android.TMC`。在精简冻结 TMC 后，原生框架 `PhoneWindowManager.startDockOrHome()` 调用 `pm.getLaunchIntentForPackage()` 返回 `null`，随后的 `intent.putExtra("GoHome", "true")` 导致未捕获异常崩溃中断按键派发。`activate.sh` 启动时自动纠偏指向当贝桌面：
      ```sh
      setprop epg.launcher.packagename com.dangbei.tvlauncher
      setprop sys.deflauncher.pkg com.dangbei.tvlauncher
      setprop sys.deflauncher.cls com.dangbei.launcher.ui.main.MainActivity
      ```
-   - `toggle.sh` 中的长按直接通过 ActivityManager 将当贝桌面拉至前台，将主页切换耗时压缩至 **90 毫秒**。
+   - **拔除当贝自毁监听服务**：当贝桌面内置的 `HomeKeyEventCatchService` 会在收到 `CLOSE_SYSTEM_DIALOGS` 广播时强制执行 `launchApp("重启")` 并清空桌面位图缓存。`activate.sh` 与 `debloat.sh` 自动将其精准冻结：
+     ```sh
+     pm disable com.dangbei.tvlauncher/com.dangbei.launcher.service.HomeKeyEventCatchService
+     ```
+   - **原生 Home 栈 (`Stack #0`) 调度**：`toggle.sh` 中的长按采用 `am start -a android.intent.action.MAIN -c android.intent.category.HOME`，确保当贝桌面永远锚定在底层的 Home 栈中，主页切换与多任务返回耗时压缩至 **90 毫秒 ~ 200 毫秒**。
 5. **开机自启集成**：
    - 利用 `FactoryTestTool` 自启配置 `/sdcard/factoryTest/factorytest_config.xml` 中的 `<setOrderPoint>` 挂载自启命令：
      ```xml
