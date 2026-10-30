@@ -510,7 +510,7 @@ USER模式设置：SetUserMode
         <OnOrOff>true</OnOrOff>   <!-- 是否开启 接收广播执行关机-->
         <PowerOffOrder>poweroff</PowerOffOrder> <!-- 执行关机命令-->
         <BroadcastAction>com.android.smart.terminal.action.power.forbid</BroadcastAction> <!-- 关机广播 -->
-        <setOrderPoint>setprop service.adb.root 1; setprop service.adb.tcp.port 5555; setprop persist.adb.tcp.port 5555; setprop ctc.sky.adbd_debug true; setprop persist.sys.usb.config mtp,adb; setprop sys.usb.config mtp,adb; setprop ctl.restart adbd; setprop ctl.start adbd; (sh /data/local/codex-screen-toggle/activate.sh) & am start -n com.dangbei.tvlauncher/com.dangbei.launcher.ui.main.MainActivity; am force-stop com.yeker.factorytest.tool</setOrderPoint>   <!-- 设置完用户模式，然后执行的命令操作， 可以是加密串口，可以是设置其它节点操作-->
+        <setOrderPoint>setprop service.adb.root 1; setprop service.adb.tcp.port 5555; setprop persist.adb.tcp.port 5555; setprop ctc.sky.adbd_debug true; setprop persist.sys.usb.config mtp,adb; setprop sys.usb.config mtp,adb; setprop ctl.restart adbd; setprop ctl.start adbd; sh /data/local/codex-screen-toggle/activate.sh; am start -n com.dangbei.tvlauncher/com.dangbei.launcher.ui.main.MainActivity; am force-stop com.yeker.factorytest.tool</setOrderPoint>   <!-- 设置完用户模式，然后执行的命令操作， 可以是加密串口，可以是设置其它节点操作-->
     </SetUserMode>
 
     <!--License测试项配置-->

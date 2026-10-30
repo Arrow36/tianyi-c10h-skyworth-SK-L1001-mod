@@ -45,3 +45,7 @@ else
 fi
 
 /system/bin/sh "$BASE/activate_adc.sh"
+
+# Auto-start ATVTools Server (dev.vodik7.atvtoolsserver) if installed
+am start-service -n dev.vodik7.atvtoolsserver/.Service >/dev/null 2>&1
+
