@@ -2,6 +2,7 @@
 # restore_bloatware.sh
 # Precision rollback for C10H (SK-L1001) bloatware freezing.
 # Restores ONLY packages and services that were actually frozen by debloat.sh.
+# Supports recovery from both COMPLETED and interrupted IN_PROGRESS transactions.
 
 STATE_DIR=/data/local/c10h-debloat
 SNAPSHOT_FILE="$STATE_DIR/snapshot.txt"
@@ -12,7 +13,13 @@ RESTORED_COUNT=0
 FAILED_COUNT=0
 
 if [ -f "$SNAPSHOT_FILE" ]; then
-    echo "[*] Found debloat state snapshot: $SNAPSHOT_FILE"
+    if grep -q "^STATUS:IN_PROGRESS" "$SNAPSHOT_FILE" && ! grep -q "^STATUS:COMPLETED" "$SNAPSHOT_FILE"; then
+        echo "[!] Detected incomplete or interrupted debloat transaction in $SNAPSHOT_FILE."
+        echo "[*] Recovering all components recorded up to the interruption point..."
+    else
+        echo "[*] Found verified debloat state snapshot: $SNAPSHOT_FILE"
+    fi
+
     while read -r line || [ -n "$line" ]; do
         case "$line" in
             PKG:*)
@@ -38,7 +45,7 @@ if [ -f "$SNAPSHOT_FILE" ]; then
                 fi
                 ;;
             *)
-                # Comment or blank line
+                # STATUS header, comments, or blank lines
                 ;;
         esac
     done < "$SNAPSHOT_FILE"
@@ -46,6 +53,7 @@ if [ -f "$SNAPSHOT_FILE" ]; then
     if [ "$FAILED_COUNT" -eq 0 ]; then
         # Archive snapshot file only when all operations succeeded
         mv "$SNAPSHOT_FILE" "$SNAPSHOT_FILE.restored"
+        sync
         echo "[+] Snapshot restore complete. Re-enabled $RESTORED_COUNT packages."
         echo "[+] Archived snapshot to $SNAPSHOT_FILE.restored"
         exit 0

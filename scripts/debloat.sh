@@ -1,19 +1,27 @@
 #!/system/bin/sh
 # debloat.sh
-# Freeze bloatware packages on C10H (SK-L1001) with pre-check state snapshots.
+# Freeze bloatware packages on C10H (SK-L1001) using Write-Ahead Logging (WAL).
 # Frees ~555MB of RAM and blocks silent remote OTA updates & boot popups.
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
 STATE_DIR=/data/local/c10h-debloat
 SNAPSHOT_FILE="$STATE_DIR/snapshot.txt"
 
-# 1. Snapshot Protection: Do not overwrite an existing active snapshot
+# 1. Snapshot Protection & Transaction State Check
 if [ -f "$SNAPSHOT_FILE" ]; then
-    echo "[!] Active debloat snapshot already exists at: $SNAPSHOT_FILE" >&2
-    echo "    Running debloat again would overwrite your original package state record." >&2
-    echo "    To restore your system, run: sh restore_bloatware.sh" >&2
-    echo "    To force a fresh debloat, remove $SNAPSHOT_FILE first." >&2
-    exit 1
+    if grep -q "^STATUS:IN_PROGRESS" "$SNAPSHOT_FILE"; then
+        echo "[ERROR] An interrupted debloat transaction was detected at: $SNAPSHOT_FILE" >&2
+        echo "        A previous run did not complete cleanly." >&2
+        echo "        Please run 'sh restore_bloatware.sh' to recover your original system state." >&2
+        exit 1
+    fi
+    if grep -q "^STATUS:COMPLETED" "$SNAPSHOT_FILE"; then
+        echo "[!] Active debloat snapshot already exists at: $SNAPSHOT_FILE" >&2
+        echo "    Running debloat again would overwrite your original package state record." >&2
+        echo "    To restore your system, run: sh restore_bloatware.sh" >&2
+        echo "    To force a fresh debloat, remove $SNAPSHOT_FILE first." >&2
+        exit 1
+    fi
 fi
 
 # 2. First, ensure launcher properties are fixed before freezing anything
@@ -86,16 +94,19 @@ for pkg in $PACKAGES; do
 done
 PACKAGES="$CLEANED_PACKAGES"
 
-# 5. Prepare snapshot directory
-mkdir -p "$STATE_DIR"
+# 5. Initialize Write-Ahead Log (WAL)
+mkdir -p "$STATE_DIR" || { echo "[ERROR] Failed to create state directory $STATE_DIR" >&2; exit 1; }
 TIMESTAMP=$(date '+%Y-%m-%d %T')
-TEMP_SNAPSHOT="$STATE_DIR/snapshot.tmp.$$"
-echo "# Debloat snapshot generated at $TIMESTAMP" > "$TEMP_SNAPSHOT"
+{
+    echo "STATUS:IN_PROGRESS"
+    echo "# Debloat WAL transaction started at $TIMESTAMP"
+} > "$SNAPSHOT_FILE" || { echo "[ERROR] Failed to write WAL transaction header to $SNAPSHOT_FILE" >&2; exit 1; }
+sync
 
 echo "=== Memory Before Debloat ==="
 free -m
 
-# 6. Disable packages and record ONLY packages that were actually enabled and successfully disabled
+# 6. Disable packages with write-ahead persistence
 DISABLED_COUNT=0
 for pkg in $PACKAGES; do
     # Check if package is installed
@@ -106,33 +117,50 @@ for pkg in $PACKAGES; do
     if pm list packages -d 2>/dev/null | grep -q "^package:${pkg}$"; then
         continue
     fi
-    # Package is currently enabled; disable it and record on verified success
+    # WAL Step: Record intended change to persistent log before/with change
+    if ! echo "PKG:$pkg" >> "$SNAPSHOT_FILE"; then
+        echo "[ERROR] WAL write failed for $pkg; aborting debloat to preserve transaction consistency!" >&2
+        exit 1
+    fi
+    sync
+
+    # Execute disable operation
     if pm disable-user --user 0 "$pkg" >/dev/null 2>&1; then
-        echo "PKG:$pkg" >> "$TEMP_SNAPSHOT"
         am force-stop "$pkg" >/dev/null 2>&1
         DISABLED_COUNT=$((DISABLED_COUNT + 1))
     else
-        echo "[!] Warning: failed to disable $pkg; skipping snapshot record."
+        echo "[!] Warning: failed to disable $pkg; rolling back WAL entry." >&2
+        sed -i "/^PKG:${pkg}$/d" "$SNAPSHOT_FILE"
+        sync
     fi
 done
 
 # 7. Optimize Dangbei Launcher service hook (record only if currently active)
 DANGBEI_SERVICE="com.dangbei.tvlauncher/com.dangbei.launcher.service.HomeKeyEventCatchService"
 if pm list packages 2>/dev/null | grep -q "^package:com.dangbei.tvlauncher$"; then
-    if dumpsys package com.dangbei.tvlauncher 2>/dev/null | grep -A 10 "disabledComponents:" | grep -q "HomeKeyEventCatchService"; then
-        echo "[*] Dangbei HomeKeyEventCatchService is already disabled; skipping snapshot record."
+    # Full multi-line check of disabledComponents
+    IS_DISABLED=$(dumpsys package com.dangbei.tvlauncher 2>/dev/null | sed -n '/disabledComponents:/,/^[[:space:]]*[A-Za-z]/p' | grep "HomeKeyEventCatchService")
+    if [ -n "$IS_DISABLED" ]; then
+        echo "[*] Dangbei HomeKeyEventCatchService is already disabled; skipping snapshot entry."
     else
-        if pm disable "$DANGBEI_SERVICE" >/dev/null 2>&1; then
-            echo "SERVICE:$DANGBEI_SERVICE" >> "$TEMP_SNAPSHOT"
-            echo "[+] Disabled Dangbei HomeKeyEventCatchService hook."
+        if echo "SERVICE:$DANGBEI_SERVICE" >> "$SNAPSHOT_FILE"; then
+            sync
+            if pm disable "$DANGBEI_SERVICE" >/dev/null 2>&1; then
+                echo "[+] Disabled Dangbei HomeKeyEventCatchService hook."
+            else
+                echo "[!] Warning: failed to disable $DANGBEI_SERVICE; rolling back entry." >&2
+                sed -i "\#^SERVICE:${DANGBEI_SERVICE}#d" "$SNAPSHOT_FILE"
+                sync
+            fi
         fi
     fi
 fi
 
-# 8. Atomically commit the snapshot file
-mv "$TEMP_SNAPSHOT" "$SNAPSHOT_FILE"
+# 8. Mark transaction COMPLETED
+echo "STATUS:COMPLETED" >> "$SNAPSHOT_FILE"
+sync
 
 echo "=== Memory After Debloat ==="
 free -m
 echo "[+] Debloat complete. Newly disabled $DISABLED_COUNT packages."
-echo "[+] State snapshot saved at $SNAPSHOT_FILE for precise rollback."
+echo "[+] Write-ahead transaction log finalized at $SNAPSHOT_FILE for precise rollback."

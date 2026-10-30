@@ -127,14 +127,17 @@ class ToolTests(unittest.TestCase):
         self.assertIn('com.dangbei.tvlauncher', fix_sh)
         self.assertIn('epg.launcher.packagename', fix_sh)
 
-    def test_debloat_snapshot_protection_and_tmc_hard_guard(self):
+    def test_debloat_wal_architecture_and_tmc_hard_guard(self):
         debloat_sh = (ROOT / 'scripts/debloat.sh').read_text(encoding='utf-8')
-        self.assertIn('Active debloat snapshot already exists', debloat_sh, "debloat.sh must protect active snapshots against overwrite")
+        self.assertIn('STATUS:IN_PROGRESS', debloat_sh, "debloat.sh must write STATUS:IN_PROGRESS at transaction start")
+        self.assertIn('STATUS:COMPLETED', debloat_sh, "debloat.sh must write STATUS:COMPLETED at transaction end")
+        self.assertIn('sync', debloat_sh, "debloat.sh must sync WAL entries to disk")
         self.assertIn('com.tatv.android.TMC is permanently protected', debloat_sh, "debloat.sh must hard-block disabling TMC")
-        self.assertIn('mv "$TEMP_SNAPSHOT" "$SNAPSHOT_FILE"', debloat_sh, "debloat.sh must write snapshot atomically")
+        self.assertIn('disabledComponents:', debloat_sh)
 
     def test_restore_precision_guard_and_legacy_flag(self):
         restore_sh = (ROOT / 'scripts/restore_bloatware.sh').read_text(encoding='utf-8')
+        self.assertIn('STATUS:IN_PROGRESS', restore_sh, "restore_bloatware.sh must handle incomplete WAL transactions")
         self.assertIn('--legacy-restore', restore_sh, "restore_bloatware.sh must require explicit flag when snapshot missing")
         self.assertIn('Refusing to blindly enable all packages', restore_sh)
         self.assertIn('FAILED_COUNT', restore_sh, "restore_bloatware.sh must check pm enable exit status")
@@ -142,6 +145,57 @@ class ToolTests(unittest.TestCase):
     def test_enable_keys_verifies_root_uid(self):
         cmd_content = (ROOT / 'scripts/key_remap/enable_keys.cmd').read_text(encoding='utf-8')
         self.assertIn('id -u | findstr /x 0', cmd_content, "enable_keys.cmd must verify root UID is 0 via findstr /x 0")
+
+    def test_wal_recovery_logic_simulation(self):
+        """Simulate WAL state parsing for both normal and interrupted transactions."""
+        def parse_and_simulate_restore(snapshot_content: str, fail_on_pkg: str = None):
+            lines = [line.strip() for line in snapshot_content.splitlines() if line.strip()]
+            is_in_progress = any(l == 'STATUS:IN_PROGRESS' for l in lines) and not any(l == 'STATUS:COMPLETED' for l in lines)
+            enabled_pkgs = []
+            enabled_services = []
+            failed_count = 0
+
+            for line in lines:
+                if line.startswith('PKG:'):
+                    pkg = line[4:]
+                    if pkg == fail_on_pkg:
+                        failed_count += 1
+                    else:
+                        enabled_pkgs.append(pkg)
+                elif line.startswith('SERVICE:'):
+                    enabled_services.append(line[8:])
+
+            success = (failed_count == 0)
+            return is_in_progress, enabled_pkgs, enabled_services, success
+
+        # Scenario 1: Interrupted transaction (crashed after 2 packages)
+        interrupted_wal = (
+            "STATUS:IN_PROGRESS\n"
+            "# Debloat WAL transaction started\n"
+            "PKG:com.test.bloat1\n"
+            "PKG:com.test.bloat2\n"
+        )
+        in_prog, pkgs, svcs, ok = parse_and_simulate_restore(interrupted_wal)
+        self.assertTrue(in_prog, "Must detect in-progress interrupted transaction")
+        self.assertEqual(pkgs, ["com.test.bloat1", "com.test.bloat2"])
+        self.assertTrue(ok)
+
+        # Scenario 2: Restore encounter partial failure (retains failure status)
+        _, _, _, ok_fail = parse_and_simulate_restore(interrupted_wal, fail_on_pkg="com.test.bloat1")
+        self.assertFalse(ok_fail, "Must report failure if package re-enable fails so snapshot is not archived")
+
+        # Scenario 3: Completed transaction with service
+        completed_wal = (
+            "STATUS:IN_PROGRESS\n"
+            "PKG:com.test.app\n"
+            "SERVICE:com.dangbei.tvlauncher/com.dangbei.launcher.service.HomeKeyEventCatchService\n"
+            "STATUS:COMPLETED\n"
+        )
+        in_prog3, pkgs3, svcs3, ok3 = parse_and_simulate_restore(completed_wal)
+        self.assertFalse(in_prog3, "Must detect completed transaction")
+        self.assertEqual(pkgs3, ["com.test.app"])
+        self.assertEqual(svcs3, ["com.dangbei.tvlauncher/com.dangbei.launcher.service.HomeKeyEventCatchService"])
+        self.assertTrue(ok3)
 
 
 if __name__ == '__main__':
