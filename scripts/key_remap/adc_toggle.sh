@@ -3,7 +3,8 @@ BASE=/data/local/codex-screen-toggle
 echo $$ > "$BASE/adc.pid"
 trap 'exit 0' TERM INT
 
-HOLD_SEC=0.5
+# Tuning: 0.35s hold threshold gives ~0.49s total instant response
+F10_HOLD_SEC=0.35
 F10_SEQ=0
 
 rm -f /dev/c10h_f10.*
@@ -26,7 +27,7 @@ while true; do
         CUR_SEQ=$F10_SEQ
         echo "$CUR_SEQ" > /dev/c10h_f10.down
         (
-          sleep $HOLD_SEC
+          sleep $F10_HOLD_SEC
           if [ "x$(cat /dev/c10h_f10.down 2>/dev/null)" = "x$CUR_SEQ" ]; then
             touch /dev/c10h_f10.long
             am start -a com.android.systemui.recents.TOGGLE_RECENTS -n com.android.systemui/.recents.RecentsActivity > /dev/null

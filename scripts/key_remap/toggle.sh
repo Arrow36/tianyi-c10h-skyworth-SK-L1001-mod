@@ -3,7 +3,14 @@ BASE=/data/local/codex-screen-toggle
 echo $$ > "$BASE/runtime.pid"
 trap 'exit 0' TERM INT
 
-HOLD_SEC=0.5
+# Tuning:
+# Short taps are ~90ms-180ms.
+# POWER uses input keyevent (has ~0.7s VM start overhead), so hold threshold is set to 0.2s
+# so the dialog appears on screen in ~0.9s from initial touch!
+# F9 uses am start (only ~0.14s overhead), so 0.35s threshold gives ~0.49s total instant response!
+POWER_HOLD_SEC=0.2
+F9_HOLD_SEC=0.35
+
 POWER_SEQ=0
 F9_SEQ=0
 
@@ -27,7 +34,7 @@ while true; do
         CUR_SEQ=$POWER_SEQ
         echo "$CUR_SEQ" > /dev/c10h_power.down
         (
-          sleep $HOLD_SEC
+          sleep $POWER_HOLD_SEC
           if [ "x$(cat /dev/c10h_power.down 2>/dev/null)" = "x$CUR_SEQ" ]; then
             touch /dev/c10h_power.long
             input keyevent --longpress 26
@@ -57,7 +64,7 @@ while true; do
         CUR_SEQ=$F9_SEQ
         echo "$CUR_SEQ" > /dev/c10h_f9.down
         (
-          sleep $HOLD_SEC
+          sleep $F9_HOLD_SEC
           if [ "x$(cat /dev/c10h_f9.down 2>/dev/null)" = "x$CUR_SEQ" ]; then
             touch /dev/c10h_f9.long
             am start -a android.intent.action.MAIN -c android.intent.category.HOME || input keyevent 3
