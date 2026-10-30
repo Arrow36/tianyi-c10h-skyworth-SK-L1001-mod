@@ -233,11 +233,14 @@ class ToolTests(unittest.TestCase):
                 self.assertIsNotNone(act_elem, "TestActivity must be declared in test manifest")
                 self.assertEqual(act_elem['name'], 'com.autostart.factoryhelper.test.TestActivity')
 
-                # DEX checks: Must use non-blocking AlarmManager and check getAction
+                # DEX checks: Must use non-blocking AlarmManager, check-cast, getAction, and structured Log events
                 self.assertIn(b'AlarmManager', t_dex)
                 self.assertIn(b'PendingIntent', t_dex)
                 self.assertIn(b'SystemClock', t_dex)
                 self.assertIn(b'getAction', t_dex)
+                self.assertIn(b'BOOT_RECEIVED', t_dex, "Test DEX must include BOOT_RECEIVED log event")
+                self.assertIn(b'ALARM_SCHEDULED', t_dex, "Test DEX must include ALARM_SCHEDULED log event")
+                self.assertIn(b'ALARM_FIRED', t_dex, "Test DEX must include ALARM_FIRED log event")
                 self.assertNotIn(b'sleep', t_dex, "Test DEX must not contain Thread.sleep blocking call")
                 self.assertNotIn(b'com.yeker.factorytest.tool', t_dex, "Test DEX must NOT target real FactoryTest tool")
                 self.assertIn(b'com.autostart.factoryhelper.test.TestActivity', t_dex)
