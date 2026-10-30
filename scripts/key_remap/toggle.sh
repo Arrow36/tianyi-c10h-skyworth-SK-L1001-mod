@@ -14,12 +14,25 @@ while true; do
   "$BASE/gpio_event_reader" "$DEVICE" | while read SEC USEC TYPECODE VALUE; do
     case "$TYPECODE:$VALUE" in
       00740001:00000001)
-        if [ "$(getprop sys.switch.screen)" = off ]; then
-          input keyevent 224
-          echo "$(date '+%F %T') power -> screen-on" >> "$BASE/events.log"
-        else
-          input keyevent 223
-          echo "$(date '+%F %T') power -> screen-off" >> "$BASE/events.log"
+        POWER_DOWN_US=$((0x$SEC * 1000000 + 0x$USEC))
+        ;;
+      00740001:00000000)
+        if [ -n "$POWER_DOWN_US" ]; then
+          DURATION_US=$((0x$SEC * 1000000 + 0x$USEC - POWER_DOWN_US))
+          POWER_DOWN_US=
+          if [ "$DURATION_US" -ge 600000 ]; then
+            input keyevent --longpress 26
+            ACTION="power-menu"
+          else
+            if [ "$(getprop sys.switch.screen)" = off ]; then
+              input keyevent 224
+              ACTION="screen-on"
+            else
+              input keyevent 223
+              ACTION="screen-off"
+            fi
+          fi
+          echo "$(date '+%F %T') power -> $ACTION duration_us=$DURATION_US" >> "$BASE/events.log"
         fi
         ;;
       00430001:00000001)
