@@ -41,6 +41,8 @@ def make_axml(pkg_name: str = "com.autostart.factoryhelper", is_test: bool = Fal
         ("enabled", 0x0101000E),
         ("exported", 0x01010010),
         ("priority", 0x0101001C),
+        ("minSdkVersion", 0x0101020C),
+        ("targetSdkVersion", 0x01010270),
         ("versionCode", 0x0101021B),
         ("versionName", 0x0101021C),
     ]
@@ -52,6 +54,7 @@ def make_axml(pkg_name: str = "com.autostart.factoryhelper", is_test: bool = Fal
         "package",
         pkg_name,
         "1.2" if is_test else "1.1",
+        "uses-sdk",
         "uses-permission",
         "android.permission.RECEIVE_BOOT_COMPLETED",
         "application",
@@ -202,6 +205,14 @@ def make_axml(pkg_name: str = "com.autostart.factoryhelper", is_test: bool = Fal
                     attr_str(NO_STR, "package", pkg_name),
                 ],
             ),
+            start_el(
+                "uses-sdk",
+                [
+                    attr_int(NS_URI, "minSdkVersion", 28),
+                    attr_int(NS_URI, "targetSdkVersion", 28),
+                ],
+            ),
+            end_el("uses-sdk"),
             start_el(
                 "uses-permission",
                 [
