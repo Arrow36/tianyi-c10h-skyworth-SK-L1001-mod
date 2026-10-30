@@ -7,7 +7,16 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
 STATE_DIR=/data/local/c10h-debloat
 SNAPSHOT_FILE="$STATE_DIR/snapshot.txt"
 
-# 1. First, ensure launcher properties are fixed before freezing anything
+# 1. Snapshot Protection: Do not overwrite an existing active snapshot
+if [ -f "$SNAPSHOT_FILE" ]; then
+    echo "[!] Active debloat snapshot already exists at: $SNAPSHOT_FILE" >&2
+    echo "    Running debloat again would overwrite your original package state record." >&2
+    echo "    To restore your system, run: sh restore_bloatware.sh" >&2
+    echo "    To force a fresh debloat, remove $SNAPSHOT_FILE first." >&2
+    exit 1
+fi
+
+# 2. First, ensure launcher properties are fixed before freezing anything
 if [ -f "$SCRIPT_DIR/fix_launcher.sh" ]; then
     sh "$SCRIPT_DIR/fix_launcher.sh"
 else
@@ -20,7 +29,7 @@ else
     fi
 fi
 
-# 2. Load package list (ignoring comments)
+# 3. Load package list (ignoring comments)
 if [ -f "$SCRIPT_DIR/debloat-packages.txt" ]; then
     PACKAGES=$(grep -v '^[[:space:]]*#' "$SCRIPT_DIR/debloat-packages.txt" | grep -v '^[[:space:]]*$')
 else
@@ -63,28 +72,30 @@ com.mediatek.bledemo
 "
 fi
 
-# 3. Safety guard for TMC (Stock Launcher)
+# 4. Hard Safety Guard: Never disable com.tatv.android.TMC
+# Stock ROM framework in /system/build.prop binds Home key to TMC.
+# Freezing TMC without a guaranteed, verified persistent cold-boot override risks breaking Home navigation.
+CLEANED_PACKAGES=""
 for pkg in $PACKAGES; do
     if [ "$pkg" = "com.tatv.android.TMC" ]; then
-        CUR_LAUNCHER=$(getprop epg.launcher.packagename)
-        if [ "$CUR_LAUNCHER" != "com.dangbei.tvlauncher" ]; then
-            echo "[!] WARNING: Refusing to disable TMC because epg.launcher.packagename is '$CUR_LAUNCHER'!"
-            echo "    Freezing TMC without an active custom launcher will cause Home key crashes."
-            echo "    Skipping TMC."
-            PACKAGES=$(echo "$PACKAGES" | grep -v '^com.tatv.android.TMC$')
-        fi
+        echo "[!] SAFETY GUARD: com.tatv.android.TMC is permanently protected by safety policy."
+        echo "    It will NOT be disabled to guarantee Home key navigation reliability across reboots."
+    else
+        CLEANED_PACKAGES="$CLEANED_PACKAGES $pkg"
     fi
 done
+PACKAGES="$CLEANED_PACKAGES"
 
-# 4. Prepare snapshot directory
+# 5. Prepare snapshot directory
 mkdir -p "$STATE_DIR"
 TIMESTAMP=$(date '+%Y-%m-%d %T')
-echo "# Debloat snapshot generated at $TIMESTAMP" > "$SNAPSHOT_FILE"
+TEMP_SNAPSHOT="$STATE_DIR/snapshot.tmp.$$"
+echo "# Debloat snapshot generated at $TIMESTAMP" > "$TEMP_SNAPSHOT"
 
 echo "=== Memory Before Debloat ==="
 free -m
 
-# 5. Disable packages and record ONLY packages that were actually enabled
+# 6. Disable packages and record ONLY packages that were actually enabled and successfully disabled
 DISABLED_COUNT=0
 for pkg in $PACKAGES; do
     # Check if package is installed
@@ -95,20 +106,31 @@ for pkg in $PACKAGES; do
     if pm list packages -d 2>/dev/null | grep -q "^package:${pkg}$"; then
         continue
     fi
-    # Package is currently enabled; record to snapshot and disable
-    echo "PKG:$pkg" >> "$SNAPSHOT_FILE"
-    pm disable-user --user 0 "$pkg" 2>/dev/null
-    am force-stop "$pkg" 2>/dev/null
-    DISABLED_COUNT=$((DISABLED_COUNT + 1))
+    # Package is currently enabled; disable it and record on verified success
+    if pm disable-user --user 0 "$pkg" >/dev/null 2>&1; then
+        echo "PKG:$pkg" >> "$TEMP_SNAPSHOT"
+        am force-stop "$pkg" >/dev/null 2>&1
+        DISABLED_COUNT=$((DISABLED_COUNT + 1))
+    else
+        echo "[!] Warning: failed to disable $pkg; skipping snapshot record."
+    fi
 done
 
-# 6. Optimize Dangbei Launcher service hook
+# 7. Optimize Dangbei Launcher service hook (record only if currently active)
 DANGBEI_SERVICE="com.dangbei.tvlauncher/com.dangbei.launcher.service.HomeKeyEventCatchService"
-if pm list packages 2>/dev/null | grep -q "package:com.dangbei.tvlauncher"; then
-    # Record service disabled state to snapshot
-    echo "SERVICE:$DANGBEI_SERVICE" >> "$SNAPSHOT_FILE"
-    pm disable "$DANGBEI_SERVICE" 2>/dev/null
+if pm list packages 2>/dev/null | grep -q "^package:com.dangbei.tvlauncher$"; then
+    if dumpsys package com.dangbei.tvlauncher 2>/dev/null | grep -A 10 "disabledComponents:" | grep -q "HomeKeyEventCatchService"; then
+        echo "[*] Dangbei HomeKeyEventCatchService is already disabled; skipping snapshot record."
+    else
+        if pm disable "$DANGBEI_SERVICE" >/dev/null 2>&1; then
+            echo "SERVICE:$DANGBEI_SERVICE" >> "$TEMP_SNAPSHOT"
+            echo "[+] Disabled Dangbei HomeKeyEventCatchService hook."
+        fi
+    fi
 fi
+
+# 8. Atomically commit the snapshot file
+mv "$TEMP_SNAPSHOT" "$SNAPSHOT_FILE"
 
 echo "=== Memory After Debloat ==="
 free -m

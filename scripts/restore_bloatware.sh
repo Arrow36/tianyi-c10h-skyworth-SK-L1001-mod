@@ -6,8 +6,10 @@
 STATE_DIR=/data/local/c10h-debloat
 SNAPSHOT_FILE="$STATE_DIR/snapshot.txt"
 SCRIPT_DIR=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
+MODE="${1:-}"
 
 RESTORED_COUNT=0
+FAILED_COUNT=0
 
 if [ -f "$SNAPSHOT_FILE" ]; then
     echo "[*] Found debloat state snapshot: $SNAPSHOT_FILE"
@@ -16,15 +18,23 @@ if [ -f "$SNAPSHOT_FILE" ]; then
             PKG:*)
                 pkg="${line#PKG:}"
                 if [ -n "$pkg" ]; then
-                    pm enable "$pkg" 2>/dev/null
-                    RESTORED_COUNT=$((RESTORED_COUNT + 1))
+                    if pm enable "$pkg" >/dev/null 2>&1; then
+                        RESTORED_COUNT=$((RESTORED_COUNT + 1))
+                    else
+                        echo "[!] Warning: failed to re-enable package: $pkg" >&2
+                        FAILED_COUNT=$((FAILED_COUNT + 1))
+                    fi
                 fi
                 ;;
             SERVICE:*)
                 svc="${line#SERVICE:}"
                 if [ -n "$svc" ]; then
-                    pm enable "$svc" 2>/dev/null
-                    echo "[+] Restored service: $svc"
+                    if pm enable "$svc" >/dev/null 2>&1; then
+                        echo "[+] Restored service: $svc"
+                    else
+                        echo "[!] Warning: failed to re-enable service: $svc" >&2
+                        FAILED_COUNT=$((FAILED_COUNT + 1))
+                    fi
                 fi
                 ;;
             *)
@@ -32,17 +42,25 @@ if [ -f "$SNAPSHOT_FILE" ]; then
                 ;;
         esac
     done < "$SNAPSHOT_FILE"
-    
-    # Archive snapshot file so it's not reused
-    mv "$SNAPSHOT_FILE" "$SNAPSHOT_FILE.restored"
-    echo "[+] Snapshot restore complete. Re-enabled $RESTORED_COUNT packages."
-    echo "[+] Archived snapshot to $SNAPSHOT_FILE.restored"
-else
-    echo "[!] No snapshot file found at $SNAPSHOT_FILE. Performing safe standard restore..."
-    if [ -f "$SCRIPT_DIR/debloat-packages.txt" ]; then
-        PACKAGES=$(grep -v '^[[:space:]]*#' "$SCRIPT_DIR/debloat-packages.txt" | grep -v '^[[:space:]]*$')
+
+    if [ "$FAILED_COUNT" -eq 0 ]; then
+        # Archive snapshot file only when all operations succeeded
+        mv "$SNAPSHOT_FILE" "$SNAPSHOT_FILE.restored"
+        echo "[+] Snapshot restore complete. Re-enabled $RESTORED_COUNT packages."
+        echo "[+] Archived snapshot to $SNAPSHOT_FILE.restored"
+        exit 0
     else
-        PACKAGES="
+        echo "[ERROR] Restore encountered $FAILED_COUNT failures!" >&2
+        echo "        Snapshot retained at $SNAPSHOT_FILE for diagnosis and retry." >&2
+        exit 1
+    fi
+else
+    if [ "$MODE" = "--legacy-restore" ]; then
+        echo "[*] Running in --legacy-restore mode (unconditional enable from package list)..."
+        if [ -f "$SCRIPT_DIR/debloat-packages.txt" ]; then
+            PACKAGES=$(grep -v '^[[:space:]]*#' "$SCRIPT_DIR/debloat-packages.txt" | grep -v '^[[:space:]]*$')
+        else
+            PACKAGES="
 com.chinatelecom.accloudbox
 com.haobai.sipphone
 com.skyworthdigital.upgrade
@@ -79,17 +97,22 @@ com.bestv.ott.baseservices.zp.jsdx
 com.domoko.thumb.yxw
 com.mediatek.bledemo
 "
+        fi
+
+        for pkg in $PACKAGES; do
+            pm enable "$pkg" >/dev/null 2>&1
+            RESTORED_COUNT=$((RESTORED_COUNT + 1))
+        done
+
+        # Also restore Dangbei service if present
+        pm enable com.dangbei.tvlauncher/com.dangbei.launcher.service.HomeKeyEventCatchService >/dev/null 2>&1
+        echo "[+] Legacy restore complete. Re-enabled $RESTORED_COUNT packages."
+        exit 0
+    else
+        echo "[ERROR] No active debloat snapshot found at $SNAPSHOT_FILE." >&2
+        echo "        Refusing to blindly enable all packages without a record of prior state." >&2
+        echo "        If you are restoring an older setup without snapshot support, run:" >&2
+        echo "        sh restore_bloatware.sh --legacy-restore" >&2
+        exit 1
     fi
-
-    for pkg in $PACKAGES; do
-        pm enable "$pkg" 2>/dev/null
-        RESTORED_COUNT=$((RESTORED_COUNT + 1))
-    done
-
-    # Also restore Dangbei service if present
-    pm enable com.dangbei.tvlauncher/com.dangbei.launcher.service.HomeKeyEventCatchService 2>/dev/null
-    echo "[+] Standard restore complete. Re-enabled $RESTORED_COUNT packages."
 fi
-
-# To restore the stock Telecom launcher if ever uninstalled:
-# cmd package install-existing --user 0 com.jsdx.speaker.launcher

@@ -127,6 +127,22 @@ class ToolTests(unittest.TestCase):
         self.assertIn('com.dangbei.tvlauncher', fix_sh)
         self.assertIn('epg.launcher.packagename', fix_sh)
 
+    def test_debloat_snapshot_protection_and_tmc_hard_guard(self):
+        debloat_sh = (ROOT / 'scripts/debloat.sh').read_text(encoding='utf-8')
+        self.assertIn('Active debloat snapshot already exists', debloat_sh, "debloat.sh must protect active snapshots against overwrite")
+        self.assertIn('com.tatv.android.TMC is permanently protected', debloat_sh, "debloat.sh must hard-block disabling TMC")
+        self.assertIn('mv "$TEMP_SNAPSHOT" "$SNAPSHOT_FILE"', debloat_sh, "debloat.sh must write snapshot atomically")
+
+    def test_restore_precision_guard_and_legacy_flag(self):
+        restore_sh = (ROOT / 'scripts/restore_bloatware.sh').read_text(encoding='utf-8')
+        self.assertIn('--legacy-restore', restore_sh, "restore_bloatware.sh must require explicit flag when snapshot missing")
+        self.assertIn('Refusing to blindly enable all packages', restore_sh)
+        self.assertIn('FAILED_COUNT', restore_sh, "restore_bloatware.sh must check pm enable exit status")
+
+    def test_enable_keys_verifies_root_uid(self):
+        cmd_content = (ROOT / 'scripts/key_remap/enable_keys.cmd').read_text(encoding='utf-8')
+        self.assertIn('id -u | findstr /x 0', cmd_content, "enable_keys.cmd must verify root UID is 0 via findstr /x 0")
+
 
 if __name__ == '__main__':
     unittest.main()
