@@ -51,22 +51,24 @@
      pm disable com.dangbei.tvlauncher/com.dangbei.launcher.service.HomeKeyEventCatchService
      ```
    - **原生 Home 栈 (`Stack #0`) 调度**：`toggle.sh` 中的长按采用 `am start -a android.intent.action.MAIN -c android.intent.category.HOME`，确保当贝桌面永远锚定在底层的 Home 栈中，主页切换与多任务返回耗时压缩至 **90 毫秒 ~ 200 毫秒**。
-5. **开机自启与特权持久化集成**：
-   - 传统方案中，`FactoryTestTool` 以 UID 1000 (`system`) 运行，缺少 Linux GID 1004 (`input`) 权限，无法读取 `/dev/input/event*`，且其后续执行的 `am force-stop` 会通过 cgroup (`killProcessGroup`) 连带强杀所有子进程。
-   - 本项目逆向发现固件原生内置了 init 级特权服务 `telecom_shell`（运行于 `user root`, `group root`, PPID 1），通过向系统属性下发指令实现真正的 Root 常驻解耦：
+5. **开机自启、独立监督（Supervisor）与特权解耦**：
+   - **执行树解耦**：利用固件原生 init 级服务 `telecom_shell`（以 `user root`, `group root`, PPID 1 运行），通过 `<setOrderPoint>` 系统属性下发，实现守护进程直接挂靠在 `init` 树下，彻底与 `FactoryTestTool` 的 cgroup 隔离，避免被后续的 `am force-stop` 连带清理。
      ```xml
-     <setOrderPoint>setprop service.adb.root 1; setprop service.adb.tcp.port 5555; setprop persist.adb.tcp.port 5555; setprop ctc.sky.adbd_debug true; setprop persist.sys.usb.config mtp,adb; setprop sys.usb.config mtp,adb; setprop ctl.restart adbd; setprop ctl.start adbd; setprop sys.sky.ctcc.shell_1 "chmod 666 /dev/input/event0 /dev/input/event6"; setprop sys.sky.ctcc.shell_2 "/system/bin/sh /data/local/codex-screen-toggle/activate.sh"; setprop ctl.start telecom_shell; am start -n com.dangbei.tvlauncher/com.dangbei.launcher.ui.main.MainActivity; am force-stop com.yeker.factorytest.tool</setOrderPoint>
+     <setOrderPoint>setprop service.adb.root 1; setprop service.adb.tcp.port 5555; setprop persist.adb.tcp.port 5555; setprop ctc.sky.adbd_debug true; setprop persist.sys.usb.config mtp,adb; setprop sys.usb.config mtp,adb; setprop ctl.restart adbd; setprop ctl.start adbd; setprop sys.sky.ctcc.shell_1 "/system/bin/sh /data/local/codex-screen-toggle/activate.sh"; setprop ctl.start telecom_shell; am start -n com.dangbei.tvlauncher/com.dangbei.launcher.ui.main.MainActivity; am force-stop com.yeker.factorytest.tool</setOrderPoint>
      ```
-   - 保持 `/data/system/devices/idc/` 与 `keylayout/` 下配置持久化存在，系统开机由 Android `InputReader` 原生加载；守护进程由 `telecom_shell` 作为 Root 进程直接挂靠在 `init` (PID 1) 树下，免疫任何 `am force-stop`，完全实现冷重启与断电开机后所有物理按键重映射零人工干预自动上线。
+   - **独立监督进程 (`supervisor.sh`)**：采用单实例目录锁机制 (`mkdir run/supervisor.lock`)，每 2 秒核验两路按键监听进程的 `/proc/$PID/cmdline` 完整命令行，杜绝 PID 复用误判与双向互保竞争；一旦子进程异常退出，看门狗在 2 秒内受控重拉，并具备防抖回退机制。
+   - **孤儿事件读取器防护**：在重拉监听器前自动核验并清理挂靠在 `event*` 上的旧 reader，杜绝多重监听导致按键二次触发。
+   - **严格权限收紧**：配置目录遵循最小特权原则，脚本与安装目录由 `root:root 755` 保护，运行状态目录 `run/` 限制为 `700`，输入设备 `/dev/input/event*` 保持默认 `0660 root:input` 安全权限，无需任何非标放权。
 
 ---
 
 ## 3. 文件列表
 
-- `activate.sh`: 激活 GPIO 实体键重映射，并将配置写入 `/data/system/devices/`，最后拉起 ADC 激活脚本。
-- `activate_adc.sh`: 激活 ADC 实体键 (F10) 重映射。
-- `toggle.sh`: GPIO 键逻辑分流（电源开关屏、F9 返回/主页）。
-- `adc_toggle.sh`: ADC 键逻辑分流（F10 确认/最近任务）。
+- `activate.sh`: 激活脚本，收紧目录权限并部署 `.idc` / `.kl`，唤醒 `supervisor.sh`。
+- `supervisor.sh`: 独立看门狗监督进程，维持 `toggle.sh` 与 `adc_toggle.sh` 高可靠运行并定时轮转日志。
+- `toggle.sh`: GPIO 物理键处理（电源键短按息屏/长按呼出关机菜单，F9 短按返回/长按主页）。
+- `adc_toggle.sh`: ADC 物理键处理（F10 短按确认/长按呼出最近任务）。
+- `activate_adc.sh`: 兼容入口包装脚本。
 - `gpio_event_reader`: 456 字节的微型输入事件解析二进制。
 - `gpio_event_reader.S`: `gpio_event_reader` 汇编源码。
 - `gpio_keypad.idc` / `adc_keypad.idc`: 输入设备配置。
