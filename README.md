@@ -286,11 +286,11 @@ adb forward tcp:9222 localabstract:webview_devtools_remote_<PID>
 ### 2. 机身实体按键多功能扩展与长短按重映射（免改 vendor + 开机自启）
 本机正面/顶部自带 3 个实体按键。原厂固件下按键功能单一且受限。我们通过“**动态重载 KeyLayout + 极简原生事件监听器 + FactoryTestTool 自启注入**”的组合方案，完全在用户空间（`/data`）实现了多功能按键映射：
 
-| 实体按键 | 对应驱动设备 | 扫描码 (Scancode) | 重映射行为 | 判定阈值 |
+| 实体按键 | 对应驱动设备 | 扫描码 (Scancode) | 重映射行为 | 判定阈值与响应表现 |
 |---|---|---|---|---|
-| **电源键** | `gpio_keypad` | 116 (`KEY_POWER`) | **短按：息屏 / 亮屏切换**（检测 `sys.switch.screen` 执行 223/224）<br>**长按：原生系统关机与重启菜单**（70ms 零 JVM 极速弹出） | 按住达到 **0.35s** 原地立刻弹出关机/重启菜单；<0.35s 松手为开关屏 |
-| **F9 键** | `gpio_keypad` | 67 | **短按：返回 (BACK / `keyevent 4`)**<br>**长按：主页 (HOME / `am start Home`)** | 按住达到 **0.35s** 原地立刻回到桌面；<0.35s 松手为返回 |
-| **F10 键** | `adc_keypad` | 68 (原静音) | **短按：确认 (CONFIRM / `keyevent 23`)**<br>**长按：最近任务卡片 (`RecentsActivity`)** | 按住达到 **0.35s** 原地立刻呼出后台任务卡片；<0.35s 松手为确认 |
+| **电源键** | `gpio_keypad` | 116 (`KEY_POWER`) | **短按：息屏 / 亮屏切换**（内核级 `KEY_SLEEP`/`KEY_WAKEUP` 注入）<br>**长按：原生系统关机与重启菜单**（70ms 零 JVM 极速弹出） | 按住达到 **0.35s** 原地立刻弹出关机/重启菜单；<0.35s 松手为开关屏（**~15ms** 极速） |
+| **F9 键** | `gpio_keypad` | 67 | **短按：返回 (BACK / `uinput` 原生注入)**<br>**长按：主页 (HOME / `am start Home`)** | 按住达到 **0.35s** 原地立刻回到桌面（**90ms**）；<0.35s 松手为返回（**~15ms** 极速） |
+| **F10 键** | `adc_keypad` | 68 (原静音) | **短按：确认 (CONFIRM / `uinput` 原生注入)**<br>**长按：最近任务卡片 (`RecentsActivity`)** | 按住达到 **0.35s** 原地立刻呼出后台任务卡片（**120ms**）；<0.35s 松手为确认（**~15ms** 极速） |
 
 #### 关键技术亮点
 1. **免写只读 `/vendor` 分区的动态 Layout 注入**：
@@ -304,9 +304,15 @@ adb forward tcp:9222 localabstract:webview_devtools_remote_<PID>
    使内核重新加载输入设备，即刻使自定义 KeyLayout 生效。
 2. **456 字节的微型原生监听器 (`gpio_event_reader`)**：
    为了保证绝对的响应速度与极低内存占用（不足 0.1MB），使用纯 ARM 汇编编写了 Linux `input_event` 解析器（源码见 `scripts/key_remap/gpio_event_reader.S`），精确捕获微秒级按下/松开时间差，长按不会触发短按的伪事件。
-3. **断电重启无感保活**：
-   在 FactoryTestTool 的自启节点 `<setOrderPoint>` 中植入了 `(sh /data/local/codex-screen-toggle/activate.sh) &`，开机由系统 root 权限服务自动拉起两套按键守护，机器即使拔电冷重启也能全自动维持映射。
-4. **根治“返回桌面与多任务卡顿 1~2 秒”的双重元凶（重大突破）**：
+3. **内核级 `/dev/uinput` 原生注入微守护进程 (`uinput_injector`)（短按提速 50 倍）**：
+   - **消灭 JVM 冷启动**：传统 `input keyevent` 底层每次均需通过 `app_process` 冷启动 Java 虚拟机（ART JVM），耗时高达 **859ms ~ 1215ms**，造成按键粘滞。
+   - **原生硬件级映射**：开发了 5.4KB 原生无 libc 依赖的 ARM 守护进程 `uinput_injector`，开机通过内核 `/dev/uinput` 接口注册虚拟设备 `c10h_keys`，常驻内存监听命名管道 (`key.fifo`)。Shell 写入单字节指令后，微秒级发射标准 Linux `input_event`，端到端延迟从 **1000ms 骤降至 13ms ~ 21ms**，手感媲美物理硬件。
+   - **零磁盘 I/O 热路径**：废除 eMMC 闪存状态文件（消灭单次 53ms 磁盘 I/O），改用 Shell 内置变量、内存 PID 与 `/dev` tmpfs 标记，日志异步非阻塞落盘。
+4. **断电重启无感保活、看门狗监督 (Supervisor) 与进程树解耦**：
+   - 利用固件原生 init 级服务 `telecom_shell`（以 `user root`, PPID 1 运行），通过系统属性启动守护进程，彻底与 `FactoryTestTool` 的 cgroup 隔离，避免被后续 `am force-stop` 连带清理。
+   - 部署独立看门狗进程 `supervisor.sh`，每 2 秒健康巡检 `uinput_injector`、`toggle.sh` 与 `adc_toggle.sh`，支持阶梯式故障退避与原地日志轮转。
+   - 采用 POSIX 原子硬链接 (`ln` + `mv`) 解决单实例锁竞争，杜绝多实例并发或按键重复分发。
+5. **根治“返回桌面与多任务卡顿 1~2 秒”的双重元凶（重大突破）**：
    - **元凶一（底层系统级崩溃）**：经反编译 `/system/framework/oat/arm/services.odex`（`PhoneWindowManager.startDockOrHome` 偏移 0x0038~0x0041）发现，原厂 ROM 在 `/system/build.prop` 中写死了默认启动器 `epg.launcher.packagename=com.tatv.android.TMC`。在精简瘦身冻结 TMC 后，系统每次收到 Home 键都会在 `intent.putExtra("GoHome", "true")` 处抛出未捕获的 `NullPointerException` 异常！导致按键分发在 Native JNI 层直接崩溃中断，被迫等待 1~2 秒超时才由系统兜底拉起。
    - **元凶二（当贝桌面的“自杀式重启”服务）**：从多任务卡片（Recents）返回桌面时，系统会向全局广播 `CLOSE_SYSTEM_DIALOGS`。反编译当贝桌面 APK（`classes2.dex`）发现，其内置的 `com.dangbei.launcher.service.HomeKeyEventCatchService` 捕获到该广播后，会强行调用 `launchApp("重启")` 并触发 `LruBitmapPool.clearMemory()`，**主动销毁桌面上全部已渲染好的图标位图缓存**，强行重新走一遍冷启动网络加载！在这 1~2 秒重载期间，桌面图标全无，导致整个屏幕“裸奔”只剩背景壁纸。
    - **完美根治方案**：
@@ -337,8 +343,11 @@ adb forward tcp:9222 localabstract:webview_devtools_remote_<PID>
 │   │   ├── enable_keys.cmd         # Windows 一键推送与激活批处理
 │   │   ├── activate.sh             # GPIO 按键与总控激活脚本（含 ATVTools 联动）
 │   │   ├── activate_adc.sh         # ADC 按键 (F10) 激活脚本
+│   │   ├── supervisor.sh           # 独立看门狗进程与日志轮转管理
 │   │   ├── toggle.sh               # GPIO 键行为分流 (电源/返回/主页)
 │   │   ├── adc_toggle.sh           # ADC 键行为分流 (确认/最近任务)
+│   │   ├── uinput_injector.c       # 内核级 /dev/uinput 注入微守护进程源码 (5.4KB ELF)
+│   │   ├── uinput_injector         # 编译好的 ARM 原生可执行二进制
 │   │   ├── gpio_event_reader       # 456 字节极简事件解析二进制 (ARM)
 │   │   ├── gpio_event_reader.S     # 汇编源码
 │   │   └── *.idc / *.kl            # 输入设备属性与布局映射配置

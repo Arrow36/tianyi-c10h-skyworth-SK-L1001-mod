@@ -30,7 +30,7 @@ Use this skill when assisting a user with a **China Telecom Tianyi Smart Screen 
 4. In `TestLocationActivity.initData()`, `FactoryTestTool` synchronously executes the `<SystemOrder><setOrderPoint>` tag via `ShellUtils.execCmd(..., false)` as `uid=1000(system)`.
 5. Set `<setOrderPoint>` in `configs/factorytest_config_plain.xml` to:
    ```xml
-   <setOrderPoint>setprop service.adb.root 1; setprop service.adb.tcp.port 5555; setprop persist.adb.tcp.port 5555; setprop ctc.sky.adbd_debug true; setprop persist.sys.usb.config mtp,adb; setprop sys.usb.config mtp,adb; setprop ctl.restart adbd; setprop ctl.start adbd; (sh /data/local/codex-screen-toggle/activate.sh) & am start -n com.dangbei.tvlauncher/com.dangbei.launcher.ui.main.MainActivity; am force-stop com.yeker.factorytest.tool</setOrderPoint>
+   <setOrderPoint>setprop service.adb.root 1; setprop service.adb.tcp.port 5555; setprop persist.adb.tcp.port 5555; setprop ctc.sky.adbd_debug true; setprop persist.sys.usb.config mtp,adb; setprop sys.usb.config mtp,adb; setprop ctl.restart adbd; setprop ctl.start adbd; setprop sys.sky.ctcc.shell_1 "/system/bin/sh /data/local/codex-screen-toggle/activate.sh"; setprop ctl.start telecom_shell; am start -n com.dangbei.tvlauncher/com.dangbei.launcher.ui.main.MainActivity; am force-stop com.yeker.factorytest.tool</setOrderPoint>
    ```
 6. Encrypt with `python scripts/factorytest_crypt.py configs/factorytest_config_plain.xml configs/factorytest_config.xml` and upload to `/sdcard/factoryTest/factorytest_config.xml` via ES FTP (first time) or `adb push`.
 7. Lock the config file against deletion (`AppBroadcastReceiver` attempts to delete `/sdcard/factoryTest` on `BOOT_COMPLETED` when `SkyFactoryGetVerify()` returns `"pass"`):
@@ -57,12 +57,18 @@ Use this skill when assisting a user with a **China Telecom Tianyi Smart Screen 
 - Apps like modern Bilibili (`tv.danmaku.bili`) bundle their own BoringSSL `libcrypto.so` and `libssl.so` (referencing symbols like `EVP_hpke_aes_128_gcm`). Because Android 9 Zygote preloads `/system/lib/libcrypto.so` and `/system/lib/libssl.so`, dynamic linking resolves `DT_NEEDED: libcrypto.so` to the older system library and crashes with `UnsatisfiedLinkError`.
 - Use `scripts/prepare_bilibili_ssl.py` on host to binary-patch `libcrypto.so` -> `libbili_o.so` (12 bytes) and `libssl.so` -> `libbsl.so` (9 bytes) in ELF `PT_DYNAMIC` / `DT_STRTAB`, then apply via `scripts/fix_bilibili_ssl.sh apply` with transactional WAL and automatic rollback protection inside `/data/app/tv.danmaku.bili-*/lib/arm/`.
 
-### Phase 6: Physical Key Remapping & Screen Toggle Daemon
-1. Push `scripts/key_remap/*` to `/data/local/codex-screen-toggle/` on the device and set executable permissions.
-2. The solution remaps:
-   - Power (scancode 116): short press (<0.35s) -> toggles display sleep/wake (`keyevent 223/224`), long press (>=0.35s) -> native shutdown/reboot dialog via `REQUEST_SHUTDOWN` activity (~70ms).
-   - F9 (scancode 67): short press (<0.35s) -> Back (`keyevent 4`), long press (>=0.35s) -> Home (`am start Home`).
-   - F10 (scancode 68): short press (<0.35s) -> Confirm (`keyevent 23`), long press (>=0.35s) -> Recents (`com.android.systemui/.recents.RecentsActivity`).
+### Phase 6: High-Performance Physical Key Remapping & Kernel uinput Daemon
+1. Push `scripts/key_remap/*` to `/data/local/codex-screen-toggle/` on the device and set executable permissions (`chmod 755`).
+2. Architecture & Latency Optimization:
+   - **Kernel-level `/dev/uinput` Injection (`uinput_injector`)**: 5.4KB zero-libc ARM binary registers `c10h_keys` virtual hardware device and listens on `$STATE_DIR/key.fifo`. Emits native Linux `input_event` in `<0.05ms`, dropping short-press latency from **~1000ms down to 13ms~21ms (50x speedup)** by bypassing JVM cold starts.
+   - **Zero Flash I/O Hot Path**: Replaced eMMC state files (`touch`/`rm` 53ms) with in-memory PID signals and `/dev` tmpfs flags.
+   - **Watchdog Supervisor (`supervisor.sh`)**: Background monitor for `uinput_injector`, `toggle.sh`, and `adc_toggle.sh` with stepped backoff throttling and in-place log rotation.
+   - **POSIX Atomic Locks**: Uses `ln "$tmp" "$lock"` with owner PID verification and atomic reclaim to prevent duplicate listeners.
+   - **Process Decoupling**: Activated via `setprop sys.sky.ctcc.shell_1 ...; setprop ctl.start telecom_shell` to run under `init` (PPID 1) rather than FactoryTestTool cgroup.
+3. The solution remaps:
+   - **Power** (scancode 116): short press (<0.35s) -> display sleep/wake via `KEY_SLEEP`/`KEY_WAKEUP` (~15ms), long press (>=0.35s) -> native shutdown/reboot dialog via `REQUEST_SHUTDOWN` activity (~70ms).
+   - **F9** (scancode 67): short press (<0.35s) -> Back via `uinput` (`KEY_BACK` ~15ms), long press (>=0.35s) -> Home via `am start Home` (90ms).
+   - **F10** (scancode 68): short press (<0.35s) -> Confirm via `uinput` (`KEY_ENTER` ~15ms), long press (>=0.35s) -> Recents via `am start RecentsActivity` (120ms).
    - Triggering model: Instant non-blocking trigger when held >=0.35s (no need to wait for finger release).
-3. Uses driver unbind/bind reload trick to apply custom layouts in `/data/system/devices/keylayout/` without modifying read-only `/vendor`.
-4. Executes automatically on boot via FactoryTestTool `<setOrderPoint>`.
+4. Uses driver unbind/bind reload trick to apply custom layouts in `/data/system/devices/keylayout/` without modifying read-only `/vendor`.
+5. Executes automatically on boot via FactoryTestTool `<setOrderPoint>` calling `telecom_shell`.
