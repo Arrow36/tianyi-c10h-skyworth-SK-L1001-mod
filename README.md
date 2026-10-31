@@ -106,7 +106,7 @@
 
 利用 `scripts/factorytest_crypt.py` 工具，我们构造了注入命令并重新加密打包：
 ```xml
-<setOrderPoint>setprop service.adb.root 1; setprop service.adb.tcp.port 5555; setprop persist.adb.tcp.port 5555; setprop ctc.sky.adbd_debug true; setprop persist.sys.usb.config mtp,adb; setprop sys.usb.config mtp,adb; setprop ctl.restart adbd; setprop ctl.start adbd; am start -n com.dangbei.tvlauncher/com.dangbei.launcher.ui.main.MainActivity; am force-stop com.yeker.factorytest.tool</setOrderPoint>
+<setOrderPoint>setprop service.adb.root 1; setprop service.adb.tcp.port 5555; setprop persist.adb.tcp.port 5555; setprop ctc.sky.adbd_debug true; setprop persist.sys.usb.config mtp,adb; setprop sys.usb.config mtp,adb; setprop ctl.restart adbd; setprop ctl.start adbd; setprop sys.sky.ctcc.shell_1 "chmod 666 /dev/input/event0 /dev/input/event6"; setprop sys.sky.ctcc.shell_2 "/system/bin/sh /data/local/codex-screen-toggle/activate.sh"; setprop ctl.start telecom_shell; am start -n com.dangbei.tvlauncher/com.dangbei.launcher.ui.main.MainActivity; am force-stop com.yeker.factorytest.tool</setOrderPoint>
 ```
 将加密后的 `factorytest_config.xml` 放回 `/sdcard/factoryTest/` 目录，在 Activity Launcher 中点开 `FactoryTestTool`，系统瞬间启动了 `adbd`（端口 5555），并自动执行返回当贝桌面与自我关闭。电脑端执行：
 ```sh

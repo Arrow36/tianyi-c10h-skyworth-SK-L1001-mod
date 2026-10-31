@@ -51,12 +51,13 @@
      pm disable com.dangbei.tvlauncher/com.dangbei.launcher.service.HomeKeyEventCatchService
      ```
    - **原生 Home 栈 (`Stack #0`) 调度**：`toggle.sh` 中的长按采用 `am start -a android.intent.action.MAIN -c android.intent.category.HOME`，确保当贝桌面永远锚定在底层的 Home 栈中，主页切换与多任务返回耗时压缩至 **90 毫秒 ~ 200 毫秒**。
-5. **开机自启集成**：
-   - 利用 `FactoryTestTool` 自启配置 `/sdcard/factoryTest/factorytest_config.xml` 中的 `<setOrderPoint>` 挂载自启命令：
+5. **开机自启与特权持久化集成**：
+   - 传统方案中，`FactoryTestTool` 以 UID 1000 (`system`) 运行，缺少 Linux GID 1004 (`input`) 权限，无法读取 `/dev/input/event*`，且其后续执行的 `am force-stop` 会通过 cgroup (`killProcessGroup`) 连带强杀所有子进程。
+   - 本项目逆向发现固件原生内置了 init 级特权服务 `telecom_shell`（运行于 `user root`, `group root`, PPID 1），通过向系统属性下发指令实现真正的 Root 常驻解耦：
      ```xml
-     <setOrderPoint>(sh /data/local/codex-screen-toggle/activate.sh) &amp;</setOrderPoint>
+     <setOrderPoint>setprop service.adb.root 1; setprop service.adb.tcp.port 5555; setprop persist.adb.tcp.port 5555; setprop ctc.sky.adbd_debug true; setprop persist.sys.usb.config mtp,adb; setprop sys.usb.config mtp,adb; setprop ctl.restart adbd; setprop ctl.start adbd; setprop sys.sky.ctcc.shell_1 "chmod 666 /dev/input/event0 /dev/input/event6"; setprop sys.sky.ctcc.shell_2 "/system/bin/sh /data/local/codex-screen-toggle/activate.sh"; setprop ctl.start telecom_shell; am start -n com.dangbei.tvlauncher/com.dangbei.launcher.ui.main.MainActivity; am force-stop com.yeker.factorytest.tool</setOrderPoint>
      ```
-   - `activate.sh` 会自动级联调用 `activate_adc.sh`，实现断电冷重启后所有按键监听与系统属性修正全自动上线。
+   - 保持 `/data/system/devices/idc/` 与 `keylayout/` 下配置持久化存在，系统开机由 Android `InputReader` 原生加载；守护进程由 `telecom_shell` 作为 Root 进程直接挂靠在 `init` (PID 1) 树下，免疫任何 `am force-stop`，完全实现冷重启与断电开机后所有物理按键重映射零人工干预自动上线。
 
 ---
 
