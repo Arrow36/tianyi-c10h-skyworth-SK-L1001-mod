@@ -7,8 +7,9 @@ STATE_DIR="$BASE/run"
 mkdir -p "$STATE_DIR" 2>/dev/null
 chmod 700 "$STATE_DIR" 2>/dev/null
 
-LOCK_DIR="$STATE_DIR/toggle.lock"
+LOCK_FILE="$STATE_DIR/toggle.lock"
 PID_FILE="$STATE_DIR/toggle.pid"
+LOG_FILE="$BASE/toggle.log"
 
 is_matching_proc() {
   local pid="$1"
@@ -23,24 +24,56 @@ is_matching_proc() {
   esac
 }
 
-# Single-instance lock
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-  EXISTING_PID=$(cat "$PID_FILE" 2>/dev/null)
-  if is_matching_proc "$EXISTING_PID" "$BASE/toggle.sh" && [ "$EXISTING_PID" != "$$" ]; then
-    echo "$(date '+%F %T') [toggle] Already running with PID $EXISTING_PID, exiting."
-    exit 0
-  fi
-  rm -rf "$LOCK_DIR" 2>/dev/null
-  mkdir "$LOCK_DIR" 2>/dev/null || exit 1
+# 1. Acquire atomic single-instance lock via hard link
+acquire_lock() {
+  local lockfile="$1"
+  local cmd_match="$2"
+  local tmpfile="${lockfile}.tmp.$$"
+  local max_attempts=5
+  local attempt=0
+
+  echo $$ > "$tmpfile"
+  while [ "$attempt" -lt "$max_attempts" ]; do
+    attempt=$((attempt + 1))
+    if ln "$tmpfile" "$lockfile" 2>/dev/null; then
+      rm -f "$tmpfile"
+      return 0
+    fi
+
+    local existing_pid
+    existing_pid=$(cat "$lockfile" 2>/dev/null)
+    if is_matching_proc "$existing_pid" "$cmd_match"; then
+      rm -f "$tmpfile"
+      if [ "$existing_pid" = "$$" ]; then
+        return 0
+      fi
+      return 1
+    fi
+
+    local reclaim_file="${lockfile}.reclaim.$$"
+    if mv "$lockfile" "$reclaim_file" 2>/dev/null; then
+      rm -f "$reclaim_file"
+      continue
+    fi
+
+    sleep 0.1 2>/dev/null || sleep 1
+  done
+
+  rm -f "$tmpfile"
+  return 1
+}
+
+if ! acquire_lock "$LOCK_FILE" "$BASE/toggle.sh"; then
+  EXISTING_PID=$(cat "$LOCK_FILE" 2>/dev/null)
+  echo "$(date '+%F %T') [toggle] Already active (PID $EXISTING_PID), exiting." >> "$LOG_FILE"
+  exit 0
 fi
 
 echo $$ > "$PID_FILE"
-echo $$ > "$LOCK_DIR/pid"
 
 cleanup() {
   pkill -P $$ 2>/dev/null
-  rm -rf "$LOCK_DIR" 2>/dev/null
-  rm -f "$PID_FILE" 2>/dev/null
+  rm -f "$LOCK_FILE" "$PID_FILE" 2>/dev/null
   exit 0
 }
 trap cleanup TERM INT EXIT
@@ -76,18 +109,34 @@ find_gpio_device() {
   return 1
 }
 
+cleanup_orphan_readers() {
+  local target_dev="$1"
+  for p in /proc/[0-9]*; do
+    local pid="${p#/proc/}"
+    [ "$pid" != "$$" ] 2>/dev/null || continue
+    if [ -f "$p/cmdline" ]; then
+      local cmd
+      cmd=$(tr '\000' ' ' < "$p/cmdline" 2>/dev/null)
+      case "$cmd" in
+        "$BASE/gpio_event_reader $target_dev"*)
+          kill "$pid" 2>/dev/null
+          ;;
+      esac
+    fi
+  done
+}
+
 while true; do
   DEVICE=$(find_gpio_device)
   if [ -z "$DEVICE" ]; then
-    echo "$(date '+%F %T') [toggle] Waiting for gpio_keypad input device..." >> "$BASE/runtime.log"
+    echo "$(date '+%F %T') [toggle] Waiting for gpio_keypad input device..." >> "$LOG_FILE"
     sleep 2
     continue
   fi
 
-  echo "$(date '+%F %T') [toggle] Starting event reader on $DEVICE" >> "$BASE/runtime.log"
-  for old_r in $(pgrep -f "gpio_event_reader $DEVICE" 2>/dev/null); do
-    kill "$old_r" 2>/dev/null
-  done
+  echo "$(date '+%F %T') [toggle] Starting event reader on $DEVICE" >> "$LOG_FILE"
+  cleanup_orphan_readers "$DEVICE"
+
   "$BASE/gpio_event_reader" "$DEVICE" | while read SEC USEC TYPECODE VALUE; do
     case "$TYPECODE:$VALUE" in
       00740001:00000001)
@@ -148,6 +197,6 @@ while true; do
     esac
   done
 
-  echo "$(date '+%F %T') [toggle] Event reader disconnected, retrying..." >> "$BASE/runtime.log"
+  echo "$(date '+%F %T') [toggle] Event reader disconnected, retrying..." >> "$LOG_FILE"
   sleep 1
 done

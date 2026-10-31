@@ -8,7 +8,7 @@ STATE_DIR="$BASE/run"
 
 # 1. Enforce strict directory and file permissions (Principle of Least Privilege)
 mkdir -p "$STATE_DIR" /data/system/devices/idc /data/system/devices/keylayout 2>/dev/null
-chown -R root:root "$BASE" /data/system/devices 2>/dev/null
+chown -R root:root "$BASE" 2>/dev/null
 chmod 755 "$BASE" 2>/dev/null
 chmod 700 "$STATE_DIR" 2>/dev/null
 chmod 755 "$BASE"/*.sh "$BASE/gpio_event_reader" 2>/dev/null
@@ -19,19 +19,22 @@ cp "$BASE/adc_keypad.idc" /data/system/devices/idc/adc_keypad.idc 2>/dev/null
 cp "$BASE/codex_gpio_sleep.kl" /data/system/devices/keylayout/codex_gpio_sleep.kl 2>/dev/null
 cp "$BASE/codex_adc_keys.kl" /data/system/devices/keylayout/codex_adc_keys.kl 2>/dev/null
 chmod 755 /data/system/devices /data/system/devices/idc /data/system/devices/keylayout 2>/dev/null
-chmod 644 /data/system/devices/idc/*.idc /data/system/devices/keylayout/*.kl 2>/dev/null
+chown root:root /data/system/devices/idc/gpio_keypad.idc \
+                /data/system/devices/idc/adc_keypad.idc \
+                /data/system/devices/keylayout/codex_gpio_sleep.kl \
+                /data/system/devices/keylayout/codex_adc_keys.kl 2>/dev/null
+chmod 644 /data/system/devices/idc/gpio_keypad.idc \
+          /data/system/devices/idc/adc_keypad.idc \
+          /data/system/devices/keylayout/codex_gpio_sleep.kl \
+          /data/system/devices/keylayout/codex_adc_keys.kl 2>/dev/null
 restorecon -RF /data/system/devices 2>/dev/null
 
-# 3. Ensure input devices retain standard safe permissions (0660 root:input)
-# Daemons run as root so 666 is never needed.
-chmod 660 /dev/input/event* 2>/dev/null
-
-# 4. System property fix for Home key dispatch
+# 3. System property fix for Home key dispatch
 setprop epg.launcher.packagename com.dangbei.tvlauncher
 setprop sys.deflauncher.pkg com.dangbei.tvlauncher
 setprop sys.deflauncher.cls com.dangbei.launcher.ui.main.MainActivity
 
-# 5. Fallback driver re-bind only if layout was not yet picked up by InputReader
+# 4. Fallback driver re-bind only if layout was not yet picked up by InputReader
 if ! dumpsys input | grep -q 'KeyLayoutFile: /data/system/devices/keylayout/codex_gpio_sleep.kl'; then
   if [ -w /sys/bus/platform/drivers/gpio-keypad/unbind ]; then
     echo gpio_keypad > /sys/bus/platform/drivers/gpio-keypad/unbind
@@ -46,7 +49,7 @@ if ! dumpsys input | grep -q 'KeyLayoutFile: /data/system/devices/keylayout/code
   fi
 fi
 
-# 6. Verify and launch supervisor.sh
+# 5. Verify and launch supervisor.sh
 is_matching_proc() {
   local pid="$1"
   local expected="$2"

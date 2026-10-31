@@ -51,14 +51,30 @@
      pm disable com.dangbei.tvlauncher/com.dangbei.launcher.service.HomeKeyEventCatchService
      ```
    - **原生 Home 栈 (`Stack #0`) 调度**：`toggle.sh` 中的长按采用 `am start -a android.intent.action.MAIN -c android.intent.category.HOME`，确保当贝桌面永远锚定在底层的 Home 栈中，主页切换与多任务返回耗时压缩至 **90 毫秒 ~ 200 毫秒**。
-5. **开机自启、独立监督（Supervisor）与特权解耦**：
+5. **开机自启、独立监督（Supervisor）与高可靠安全机制**：
    - **执行树解耦**：利用固件原生 init 级服务 `telecom_shell`（以 `user root`, `group root`, PPID 1 运行），通过 `<setOrderPoint>` 系统属性下发，实现守护进程直接挂靠在 `init` 树下，彻底与 `FactoryTestTool` 的 cgroup 隔离，避免被后续的 `am force-stop` 连带清理。
      ```xml
      <setOrderPoint>setprop service.adb.root 1; setprop service.adb.tcp.port 5555; setprop persist.adb.tcp.port 5555; setprop ctc.sky.adbd_debug true; setprop persist.sys.usb.config mtp,adb; setprop sys.usb.config mtp,adb; setprop ctl.restart adbd; setprop ctl.start adbd; setprop sys.sky.ctcc.shell_1 "/system/bin/sh /data/local/codex-screen-toggle/activate.sh"; setprop ctl.start telecom_shell; am start -n com.dangbei.tvlauncher/com.dangbei.launcher.ui.main.MainActivity; am force-stop com.yeker.factorytest.tool</setOrderPoint>
      ```
-   - **独立监督进程 (`supervisor.sh`)**：采用单实例目录锁机制 (`mkdir run/supervisor.lock`)，每 2 秒核验两路按键监听进程的 `/proc/$PID/cmdline` 完整命令行，杜绝 PID 复用误判与双向互保竞争；一旦子进程异常退出，看门狗在 2 秒内受控重拉，并具备防抖回退机制。
-   - **孤儿事件读取器防护**：在重拉监听器前自动核验并清理挂靠在 `event*` 上的旧 reader，杜绝多重监听导致按键二次触发。
-   - **严格权限收紧**：配置目录遵循最小特权原则，脚本与安装目录由 `root:root 755` 保护，运行状态目录 `run/` 限制为 `700`，输入设备 `/dev/input/event*` 保持默认 `0660 root:input` 安全权限，无需任何非标放权。
+   - **POSIX 原子硬链接单实例锁 (`ln` + `mv`)**：在 `supervisor.sh`、`toggle.sh` 与 `adc_toggle.sh` 中采用基于 POSIX 原子硬链接 (`ln "$tmpfile" "$lockfile"`) 的无竞争单实例锁。临时文件先写入 PID 再执行链接，从创建瞬间即具备所有权信息；残留死锁采用原子重命名 (`mv "$lockfile" "$lockfile.reclaim.$$"`) 回收，彻底消除了并发启动时的检查与清理竞争条件。
+   - **故障退避机制（Backoff Throttling）**：`supervisor.sh` 监控子进程生命周期。若检测到子进程连续快速崩溃（如因硬件异常或文件缺失），自动触发阶梯式退避延迟（连续失败 >3 次延时 5 秒，>5 次延时 15 秒并报警），稳定运行满 60 秒后自动清零计数，彻底避免 CPU 空转狂飙。
+   - **无损原地日志轮转（In-place Truncation）**：定时监控日志体积，当超过 200KB 时采用 `tail -n 300 ... > .tmp && cat .tmp > logfile` 原地覆盖截断，严格保留已有进程的文件描述符与 Inode，避免 `mv` 导致的孤儿写入与日志失联，覆盖 `supervisor.log`、`toggle.log`、`adc_toggle.log` 与 `events.log`。
+   - **严格前缀比对的孤儿事件读取器防护**：通过解析 `/proc/[0-9]*/cmdline` 首部参数，精准核实 `$BASE/gpio_event_reader $DEVICE` 进程身份，杜绝 `pgrep -f` 全文模糊匹配误伤其他包含同名参数的系统命令或脚本。
+   - **最小特权与原生权限保护**：完全保留 Android 原生 `/dev/input/event*`（`0660 root:input`）驱动权限，不进行任何非必要的 chmod；`chown` 严格仅作用于 `$BASE` 及指定的 4 个 `.idc`/`.kl` 文件，严禁递归越权修改系统公共目录 `/data/system/devices`。
+   - **Supervisor 异常退出与单点故障恢复机制**：
+     由于 `/vendor` 分区为只读 ext4 且 `vendor.rc` 将 `telecom_shell` 声明为 `disabled oneshot`，init 默认不会在 `kill -9` 后自动重拉 oneshot 服务。固件已提供双重可靠恢复入口：
+     - **开机自动自愈**：每次重启时均由 `FactoryTestTool` / `telecom_shell` 全自动激活。
+     - **手动/脚本即时唤醒**：若在调试过程中误杀 supervisor，无需重启设备，执行以下任一命令即可秒级无缝重拉：
+       ```sh
+       # 方式 1：通过原生 init 属性通道唤醒
+       adb shell "setprop sys.sky.ctcc.shell_1 /data/local/codex-screen-toggle/activate.sh; setprop ctl.start telecom_shell"
+
+       # 方式 2：直接执行激活脚本
+       adb shell "sh /data/local/codex-screen-toggle/activate.sh"
+
+       # 方式 3：Windows 批处理一键刷新
+       enable_keys.cmd
+       ```
 
 ---
 
