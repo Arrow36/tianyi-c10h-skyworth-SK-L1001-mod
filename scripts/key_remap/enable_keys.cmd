@@ -36,6 +36,7 @@ echo [*] Pushing scripts and binaries...
 for %%F in (
     "toggle.sh"
     "supervisor.sh"
+    "uinput_injector"
     "activate.sh"
     "gpio_keypad.idc"
     "codex_gpio_sleep.kl"
@@ -57,7 +58,7 @@ for %%F in (
 )
 
 echo [*] Setting executable permissions...
-%ADB% %TARGET% shell "chmod 755 /data/local/codex-screen-toggle/activate.sh /data/local/codex-screen-toggle/activate_adc.sh /data/local/codex-screen-toggle/supervisor.sh /data/local/codex-screen-toggle/gpio_event_reader /data/local/codex-screen-toggle/toggle.sh /data/local/codex-screen-toggle/adc_toggle.sh"
+%ADB% %TARGET% shell "chmod 755 /data/local/codex-screen-toggle/activate.sh /data/local/codex-screen-toggle/activate_adc.sh /data/local/codex-screen-toggle/supervisor.sh /data/local/codex-screen-toggle/uinput_injector /data/local/codex-screen-toggle/gpio_event_reader /data/local/codex-screen-toggle/toggle.sh /data/local/codex-screen-toggle/adc_toggle.sh"
 if errorlevel 1 goto :fail_deploy
 
 echo [*] Activating key remap daemons...

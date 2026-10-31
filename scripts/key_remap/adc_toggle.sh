@@ -10,6 +10,7 @@ chmod 700 "$STATE_DIR" 2>/dev/null
 LOCK_FILE="$STATE_DIR/adc_toggle.lock"
 PID_FILE="$STATE_DIR/adc_toggle.pid"
 LOG_FILE="$BASE/adc_toggle.log"
+KEY_FIFO="$STATE_DIR/key.fifo"
 
 is_matching_proc() {
   local pid="$1"
@@ -73,7 +74,7 @@ echo $$ > "$PID_FILE"
 
 cleanup() {
   pkill -P $$ 2>/dev/null
-  rm -f "$LOCK_FILE" "$PID_FILE" 2>/dev/null
+  rm -f "$LOCK_FILE" "$PID_FILE" /dev/c10h_f10.long 2>/dev/null
   exit 0
 }
 trap cleanup TERM INT EXIT
@@ -81,8 +82,9 @@ trap cleanup TERM INT EXIT
 # Tuning: 0.35s hold threshold gives ~0.49s total instant response
 F10_HOLD_SEC=0.35
 F10_SEQ=0
+F10_TIMER_PID=0
 
-rm -f "$STATE_DIR"/c10h_f10.*
+rm -f /dev/c10h_f10.long 2>/dev/null
 
 # Dynamic sysfs device discovery (adc_keypad) with retry loop
 find_adc_device() {
@@ -137,24 +139,26 @@ while true; do
         # F10 Down (Button 2 / Microphone: Confirm / Recents)
         F10_SEQ=$((F10_SEQ + 1))
         CUR_SEQ=$F10_SEQ
-        echo "$CUR_SEQ" > "$STATE_DIR/c10h_f10.down"
+        rm -f /dev/c10h_f10.long 2>/dev/null
         (
           sleep $F10_HOLD_SEC
-          if [ "x$(cat "$STATE_DIR/c10h_f10.down" 2>/dev/null)" = "x$CUR_SEQ" ]; then
-            touch "$STATE_DIR/c10h_f10.long"
+          if [ "x$CUR_SEQ" = "x$F10_SEQ" ]; then
+            touch /dev/c10h_f10.long 2>/dev/null
             am start -a com.android.systemui.recents.TOGGLE_RECENTS -n com.android.systemui/.recents.RecentsActivity > /dev/null
-            echo "$(date '+%F %T') F10 -> long-press (RECENTS) triggered" >> "$BASE/events.log"
+            ( echo "$(date '+%F %T') F10 -> long-press (RECENTS) triggered" >> "$BASE/events.log" ) &
           fi
         ) &
+        F10_TIMER_PID=$!
         ;;
       00440001:00000000)
         # F10 Up
-        rm -f "$STATE_DIR/c10h_f10.down"
-        if [ -f "$STATE_DIR/c10h_f10.long" ]; then
-          rm -f "$STATE_DIR/c10h_f10.long"
+        kill $F10_TIMER_PID 2>/dev/null
+        if [ -f /dev/c10h_f10.long ]; then
+          rm -f /dev/c10h_f10.long 2>/dev/null
         else
-          input keyevent 23
-          echo "$(date '+%F %T') F10 -> short-press (CONFIRM)" >> "$BASE/events.log"
+          # Instant microsecond CONFIRM key injection via uinput virtual device
+          echo -n C > "$KEY_FIFO" 2>/dev/null || input keyevent 23
+          ( echo "$(date '+%F %T') F10 -> short-press (CONFIRM)" >> "$BASE/events.log" ) &
         fi
         ;;
     esac

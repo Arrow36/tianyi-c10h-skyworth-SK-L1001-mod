@@ -1,6 +1,6 @@
 #!/system/bin/sh
 # supervisor.sh - Single-instance process supervisor for C10H key remap daemons.
-# Manages toggle.sh (GPIO Power/F9) and adc_toggle.sh (ADC F10).
+# Manages uinput_injector (instant key injector), toggle.sh (GPIO Power/F9), and adc_toggle.sh (ADC F10).
 # Runs as root with PPID 1 under init (telecom_shell).
 
 BASE=/data/local/codex-screen-toggle
@@ -75,9 +75,13 @@ fi
 
 echo $$ > "$PID_FILE"
 
+# Ensure communication FIFO exists for microsecond key injection
+[ -p "$STATE_DIR/key.fifo" ] || mkfifo "$STATE_DIR/key.fifo" 2>/dev/null
+chmod 600 "$STATE_DIR/key.fifo" 2>/dev/null
+
 cleanup() {
   log_msg "Supervisor exiting on signal."
-  rm -f "$LOCK_FILE" "$PID_FILE" 2>/dev/null
+  rm -f "$LOCK_FILE" "$PID_FILE" "$STATE_DIR/key.fifo" 2>/dev/null
   exit 0
 }
 trap cleanup TERM INT
@@ -119,15 +123,49 @@ start_daemon() {
   log_msg "Daemon $name launched (PID $new_pid)."
 }
 
+start_uinput_injector() {
+  local bin="$BASE/uinput_injector"
+  local pid_file="$STATE_DIR/uinput_injector.pid"
+  [ -x "$bin" ] || return 1
+
+  local old_pid
+  old_pid=$(cat "$pid_file" 2>/dev/null)
+  if is_matching_proc "$old_pid" "$bin"; then
+    return 0
+  fi
+
+  log_msg "Starting uinput_injector daemon..."
+  nohup "$bin" > /dev/null 2>&1 < /dev/null &
+  local new_pid=$!
+  echo "$new_pid" > "$pid_file"
+  log_msg "uinput_injector launched (PID $new_pid)."
+}
+
 # Main supervisor loop with crash backoff throttling
 FAIL_COUNT_TOGGLE=0
 FAIL_COUNT_ADC=0
+FAIL_COUNT_UINPUT=0
 LAST_START_TOGGLE=0
 LAST_START_ADC=0
+LAST_START_UINPUT=0
 LAST_CHECK=$(date +%s 2>/dev/null || echo 0)
 
 while true; do
   NOW=$(date +%s 2>/dev/null || echo 0)
+
+  # Check uinput_injector (hardware uinput virtual keyboard)
+  UINJ_PID=$(cat "$STATE_DIR/uinput_injector.pid" 2>/dev/null)
+  if is_matching_proc "$UINJ_PID" "$BASE/uinput_injector"; then
+    if [ "$LAST_START_UINPUT" -gt 0 ] && [ $((NOW - LAST_START_UINPUT)) -ge 60 ]; then
+      FAIL_COUNT_UINPUT=0
+    fi
+  else
+    FAIL_COUNT_UINPUT=$((FAIL_COUNT_UINPUT + 1))
+    if [ "$FAIL_COUNT_UINPUT" -le 5 ]; then
+      start_uinput_injector
+      LAST_START_UINPUT=$(date +%s 2>/dev/null || echo 0)
+    fi
+  fi
 
   # Check toggle.sh
   TOGGLE_PID=$(cat "$STATE_DIR/toggle.pid" 2>/dev/null)

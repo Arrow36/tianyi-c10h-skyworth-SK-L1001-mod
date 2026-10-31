@@ -10,6 +10,7 @@ chmod 700 "$STATE_DIR" 2>/dev/null
 LOCK_FILE="$STATE_DIR/toggle.lock"
 PID_FILE="$STATE_DIR/toggle.pid"
 LOG_FILE="$BASE/toggle.log"
+KEY_FIFO="$STATE_DIR/key.fifo"
 
 is_matching_proc() {
   local pid="$1"
@@ -73,7 +74,7 @@ echo $$ > "$PID_FILE"
 
 cleanup() {
   pkill -P $$ 2>/dev/null
-  rm -f "$LOCK_FILE" "$PID_FILE" 2>/dev/null
+  rm -f "$LOCK_FILE" "$PID_FILE" /dev/c10h_power.long /dev/c10h_f9.long 2>/dev/null
   exit 0
 }
 trap cleanup TERM INT EXIT
@@ -87,8 +88,10 @@ F9_HOLD_SEC=0.35
 
 POWER_SEQ=0
 F9_SEQ=0
+POWER_TIMER_PID=0
+F9_TIMER_PID=0
 
-rm -f "$STATE_DIR"/c10h_power.* "$STATE_DIR"/c10h_f9.*
+rm -f /dev/c10h_power.long /dev/c10h_f9.long 2>/dev/null
 
 # Dynamic sysfs device discovery (gpio_keypad) with retry loop
 find_gpio_device() {
@@ -143,55 +146,58 @@ while true; do
         # Power Down
         POWER_SEQ=$((POWER_SEQ + 1))
         CUR_SEQ=$POWER_SEQ
-        echo "$CUR_SEQ" > "$STATE_DIR/c10h_power.down"
+        rm -f /dev/c10h_power.long 2>/dev/null
         (
           sleep $POWER_HOLD_SEC
-          if [ "x$(cat "$STATE_DIR/c10h_power.down" 2>/dev/null)" = "x$CUR_SEQ" ]; then
-            touch "$STATE_DIR/c10h_power.long"
-            # Skyworth C10H custom ShutdownActivity: displays dual-option prompt with Reboot & Shutdown
+          if [ "x$CUR_SEQ" = "x$POWER_SEQ" ]; then
+            touch /dev/c10h_power.long 2>/dev/null
             am start -a com.android.internal.intent.action.REQUEST_SHUTDOWN --ez android.intent.extra.KEY_CONFIRM true > /dev/null 2>&1 || input keyevent --longpress 26
-            echo "$(date '+%F %T') power -> long-press (power-menu) triggered" >> "$BASE/events.log"
+            ( echo "$(date '+%F %T') power -> long-press (power-menu) triggered" >> "$BASE/events.log" ) &
           fi
         ) &
+        POWER_TIMER_PID=$!
         ;;
       00740001:00000000)
         # Power Up
-        rm -f "$STATE_DIR/c10h_power.down"
-        if [ -f "$STATE_DIR/c10h_power.long" ]; then
-          rm -f "$STATE_DIR/c10h_power.long"
+        kill $POWER_TIMER_PID 2>/dev/null
+        if [ -f /dev/c10h_power.long ]; then
+          rm -f /dev/c10h_power.long 2>/dev/null
         else
+          # Instant microsecond screen toggle via uinput virtual hardware keys
           if [ "$(getprop sys.switch.screen)" = off ]; then
-            input keyevent 224
+            echo -n W > "$KEY_FIFO" 2>/dev/null || input keyevent 224
             ACTION="screen-on"
           else
-            input keyevent 223
+            echo -n S > "$KEY_FIFO" 2>/dev/null || input keyevent 223
             ACTION="screen-off"
           fi
-          echo "$(date '+%F %T') power -> short-press ($ACTION)" >> "$BASE/events.log"
+          ( echo "$(date '+%F %T') power -> short-press ($ACTION)" >> "$BASE/events.log" ) &
         fi
         ;;
       00430001:00000001)
         # F9 Down (Button 1: Back / Home)
         F9_SEQ=$((F9_SEQ + 1))
         CUR_SEQ=$F9_SEQ
-        echo "$CUR_SEQ" > "$STATE_DIR/c10h_f9.down"
+        rm -f /dev/c10h_f9.long 2>/dev/null
         (
           sleep $F9_HOLD_SEC
-          if [ "x$(cat "$STATE_DIR/c10h_f9.down" 2>/dev/null)" = "x$CUR_SEQ" ]; then
-            touch "$STATE_DIR/c10h_f9.long"
+          if [ "x$CUR_SEQ" = "x$F9_SEQ" ]; then
+            touch /dev/c10h_f9.long 2>/dev/null
             am start -a android.intent.action.MAIN -c android.intent.category.HOME || input keyevent 3
-            echo "$(date '+%F %T') F9 -> long-press (HOME) triggered" >> "$BASE/events.log"
+            ( echo "$(date '+%F %T') F9 -> long-press (HOME) triggered" >> "$BASE/events.log" ) &
           fi
         ) &
+        F9_TIMER_PID=$!
         ;;
       00430001:00000000)
         # F9 Up
-        rm -f "$STATE_DIR/c10h_f9.down"
-        if [ -f "$STATE_DIR/c10h_f9.long" ]; then
-          rm -f "$STATE_DIR/c10h_f9.long"
+        kill $F9_TIMER_PID 2>/dev/null
+        if [ -f /dev/c10h_f9.long ]; then
+          rm -f /dev/c10h_f9.long 2>/dev/null
         else
-          input keyevent 4
-          echo "$(date '+%F %T') F9 -> short-press (BACK)" >> "$BASE/events.log"
+          # Instant microsecond BACK key injection via uinput virtual device
+          echo -n B > "$KEY_FIFO" 2>/dev/null || input keyevent 4
+          ( echo "$(date '+%F %T') F9 -> short-press (BACK)" >> "$BASE/events.log" ) &
         fi
         ;;
     esac

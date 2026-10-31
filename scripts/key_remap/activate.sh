@@ -11,7 +11,7 @@ mkdir -p "$STATE_DIR" /data/system/devices/idc /data/system/devices/keylayout 2>
 chown -R root:root "$BASE" 2>/dev/null
 chmod 755 "$BASE" 2>/dev/null
 chmod 700 "$STATE_DIR" 2>/dev/null
-chmod 755 "$BASE"/*.sh "$BASE/gpio_event_reader" 2>/dev/null
+chmod 755 "$BASE"/*.sh "$BASE/gpio_event_reader" "$BASE/uinput_injector" 2>/dev/null
 
 # 2. Deploy IDC and KeyLayout files permanently for native InputReader loading
 cp "$BASE/gpio_keypad.idc" /data/system/devices/idc/gpio_keypad.idc 2>/dev/null
